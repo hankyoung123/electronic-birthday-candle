@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 struct CeremonyView: View {
@@ -104,72 +107,295 @@ struct CeremonyView: View {
 @MainActor
 private struct BlowInspector: View {
     let session: CeremonySession
+    @State private var copied = false
+    @State private var spectrumCopied: String?
 
     var body: some View {
         let snapshot = session.debugBlowSnapshot
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Blow Inspector")
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.orange.opacity(0.9))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Blow Inspector")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange.opacity(0.9))
+                    Spacer()
+                    copyButton
+                }
 
-            metric("Input", session.debugInputDescription)
-            metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
-            metric("RMS", formatted(snapshot.rms))
-            metric("Texture", formatted(snapshot.texture))
-            metric("Raw", formatted(snapshot.rawScore))
-            metric("Smoothed", formatted(snapshot.smoothedIntensity))
-            metric("Start", formatted(session.debugStrongBlowStartThreshold))
-            metric("Maintain", formatted(session.debugStrongBlowMaintainThreshold))
+                metric("Input Route", session.debugInputDescription)
+                metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
+                metric(
+                    "RMS / dBFS",
+                    "\(formatted(snapshot.rms)) / \(String(format: "%.1f dB", snapshot.dbFS))"
+                )
 
-            HStack(spacing: 8) {
-                Text("Blow")
-                    .frame(width: 72, alignment: .leading)
-                ProgressView(value: Double(session.blowIntensity), total: 1)
-                    .tint(.orange)
-                Text(formatted(session.blowIntensity))
-                    .frame(width: 40, alignment: .trailing)
-            }
+                HStack {
+                    Text("Spectrum")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange.opacity(0.9))
+                    Spacer()
+                    copyButton("Copy Snapshot", copiedLabel: "Snapshot ✓", text: snapshotText)
+                    copyButton("Copy 3s Avg", copiedLabel: "3s Avg ✓", text: rollingText)
+                }
 
-            HStack(spacing: 8) {
-                Text("Music")
-                    .frame(width: 72, alignment: .leading)
-                Slider(
+                let maxBand = max(
+                    snapshot.lowEnergy,
+                    max(snapshot.midEnergy, max(snapshot.upperEnergy, snapshot.highEnergy))
+                )
+                energyRow("Low 80–300", energy: snapshot.lowEnergy, maxEnergy: maxBand)
+                energyRow("Mid 300–800", energy: snapshot.midEnergy, maxEnergy: maxBand)
+                energyRow("Up 800–2k", energy: snapshot.upperEnergy, maxEnergy: maxBand)
+                energyRow("High 2k–5k", energy: snapshot.highEnergy, maxEnergy: maxBand)
+
+                metric("Wind Energy", formatted(snapshot.windEnergy))
+                metric("Energy Score", formatted(snapshot.energyScore))
+                progressRow(
+                    "Broadband",
+                    value: Double(snapshot.broadbandScore),
+                    detail: "\(Int((snapshot.broadbandScore * 100).rounded()))%"
+                )
+                metric("Spectral Flatness", String(format: "%.2f", snapshot.flatness))
+
+                // Final score components for the additive model (device tuning).
+                metric("Raw Final", formatted(snapshot.rawScore))
+                progressRow("Final / Flame", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
+                progressRow(
+                    "Strong",
+                    value: Double(
+                        session.debugRequiredStrongBlowDuration > 0
+                            ? session.debugStrongBlowDuration / session.debugRequiredStrongBlowDuration
+                            : 0
+                    ),
+                    detail: String(
+                        format: "%.2f / %.2f s",
+                        session.debugStrongBlowDuration,
+                        session.debugRequiredStrongBlowDuration
+                    )
+                )
+
+                Divider()
+                    .overlay(.white.opacity(0.12))
+
+                Text("Live Tuning")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.orange.opacity(0.9))
+
+                sliderRow(
+                    "Start",
                     value: Binding(
-                        get: { Double(session.debugMusicVolume) },
-                        set: { session.setDebugMusicVolume(Float($0)) }
+                        get: { Double(session.debugStrongBlowStartThreshold) },
+                        set: { session.setDebugStrongBlowStartThreshold(Float($0)) }
+                    ),
+                    in: 0.05...1,
+                    step: 0.01,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "Maintain",
+                    value: Binding(
+                        get: { Double(session.debugStrongBlowMaintainThreshold) },
+                        set: { session.setDebugStrongBlowMaintainThreshold(Float($0)) }
                     ),
                     in: 0...1,
-                    step: 0.1
+                    step: 0.01,
+                    format: "%.2f"
                 )
-                .tint(.orange.opacity(0.72))
-                Text("\(Int((session.debugMusicVolume * 100).rounded()))%")
-                    .frame(width: 40, alignment: .trailing)
-            }
+                sliderRow(
+                    "Duration",
+                    value: Binding(
+                        get: { session.debugRequiredStrongBlowDuration },
+                        set: { session.setDebugRequiredStrongBlowDuration($0) }
+                    ),
+                    in: 0.1...2,
+                    step: 0.01,
+                    format: "%.2f s"
+                )
+                sliderRow(
+                    "Decay",
+                    value: Binding(
+                        get: { session.debugStrongBlowDecayRate },
+                        set: { session.setDebugStrongBlowDecayRate($0) }
+                    ),
+                    in: 0...2,
+                    step: 0.05,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "Energy Wt",
+                    value: Binding(
+                        get: { Double(session.debugEnergyScoreWeight) },
+                        set: { session.setDebugEnergyScoreWeight(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "Broadband Wt",
+                    value: Binding(
+                        get: { Double(session.debugBroadbandScoreWeight) },
+                        set: { session.setDebugBroadbandScoreWeight(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
 
-            metric(
-                "Strong",
-                String(
-                    format: "%.2f / %.2f s",
-                    session.debugStrongBlowDuration,
-                    session.debugRequiredStrongBlowDuration
-                )
-            )
+                Divider()
+                    .overlay(.white.opacity(0.12))
+
+                HStack(spacing: 8) {
+                    Text("Music")
+                        .frame(width: 72, alignment: .leading)
+                    Slider(
+                        value: Binding(
+                            get: { Double(session.debugMusicVolume) },
+                            set: { session.setDebugMusicVolume(Float($0)) }
+                        ),
+                        in: 0...1,
+                        step: 0.1
+                    )
+                    .tint(.orange.opacity(0.72))
+                    Text("\(Int((session.debugMusicVolume * 100).rounded()))%")
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+            .padding(12)
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
         }
-        .font(.system(size: 11, weight: .regular, design: .monospaced))
-        .foregroundStyle(.white.opacity(0.72))
-        .padding(12)
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxHeight: 470)
         .accessibilityElement(children: .contain)
+    }
+
+    private var copyButton: some View {
+        Button {
+            UIPasteboard.general.string = copyText
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.4))
+                copied = false
+            }
+        } label: {
+            Text(copied ? "Copied ✓" : "Copy Values")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(copied ? .green : .orange)
+        }
+    }
+
+    private var copyText: String {
+        String(
+            format: "start=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f\nenergyWt=%.2f\nbroadbandWt=%.2f",
+            session.debugStrongBlowStartThreshold,
+            session.debugStrongBlowMaintainThreshold,
+            session.debugRequiredStrongBlowDuration,
+            session.debugStrongBlowDecayRate,
+            session.debugEnergyScoreWeight,
+            session.debugBroadbandScoreWeight
+        )
+    }
+
+    private func copyButton(_ title: String, copiedLabel: String, text: String) -> some View {
+        Button {
+            UIPasteboard.general.string = text
+            spectrumCopied = copiedLabel
+            Task {
+                try? await Task.sleep(for: .seconds(1.4))
+                spectrumCopied = nil
+            }
+        } label: {
+            Text(spectrumCopied == copiedLabel ? copiedLabel : title)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(spectrumCopied == copiedLabel ? .green : .orange)
+        }
+    }
+
+    private var snapshotText: String {
+        let s = session.debugBlowSnapshot
+        func f(_ value: Float) -> String { String(format: "%.3f", value) }
+        return """
+        Input: \(session.debugInputDescription)
+        SampleRate: \(Int(session.debugInputSampleRate.rounded()))
+        dBFS: \(String(format: "%.1f", s.dbFS))
+
+        Low:  \(f(s.lowEnergy))
+        Mid:  \(f(s.midEnergy))
+        Up:   \(f(s.upperEnergy))
+        High: \(f(s.highEnergy))
+        Wind: \(f(s.windEnergy))
+
+        Energy:   \(String(format: "%.2f", s.energyScore))
+        Broadband: \(String(format: "%.2f", s.broadbandScore))
+        Final:    \(String(format: "%.2f", s.smoothedIntensity))
+        Flatness: \(String(format: "%.2f", s.flatness))
+        """
+    }
+
+    private var rollingText: String {
+        let s = session.debugSpectrumRollingSummary
+        guard s.sampleCount > 0 else {
+            return "No samples yet — blow detection must be active for ~3s."
+        }
+        func f(_ value: Float) -> String { String(format: "%.2f", value) }
+        func p(_ value: Float) -> String { String(format: "%.0f%%", value * 100) }
+        return """
+        -- 3s Avg (N=\(s.sampleCount)) --
+        dBFS:  \(f(s.dbFSAverage)) (peak \(f(s.dbFSPeak)))
+        Energy: \(f(s.energyScoreAverage)) (peak \(f(s.energyScorePeak)))
+        Broadband: \(p(s.broadbandAverage)) (peak \(p(s.broadbandPeak)))
+        Final:  \(f(s.blowScoreAverage)) (peak \(f(s.blowScorePeak)))
+        Bands(avg): Low \(f(s.lowEnergyAverage)) Mid \(f(s.midEnergyAverage)) Up \(f(s.upperEnergyAverage)) High \(f(s.highEnergyAverage))
+        """
+    }
+
+    private func energyRow(_ label: String, energy: Float, maxEnergy: Float) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 104, alignment: .leading)
+            ProgressView(value: Double(maxEnergy > 0 ? energy / maxEnergy : 0), total: 1)
+                .tint(.orange.opacity(0.85))
+            Text(String(format: "%.3f", energy))
+                .frame(width: 64, alignment: .trailing)
+        }
     }
 
     private func metric(_ label: String, _ value: String) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .frame(width: 72, alignment: .leading)
+                .frame(width: 104, alignment: .leading)
             Text(value)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
             Spacer(minLength: 0)
+        }
+    }
+
+    private func progressRow(_ label: String, value: Double, detail: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 104, alignment: .leading)
+            ProgressView(value: value, total: 1)
+                .tint(.orange)
+            Text(detail)
+                .lineLimit(1)
+                .frame(width: 104, alignment: .trailing)
+        }
+    }
+
+    private func sliderRow(
+        _ label: String,
+        value: Binding<Double>,
+        in range: ClosedRange<Double>,
+        step: Double,
+        format: String
+    ) -> some View {
+        let displayed = String(format: format, value.wrappedValue)
+        return HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 104, alignment: .leading)
+            Slider(value: value, in: range, step: step)
+                .tint(.orange.opacity(0.72))
+            Text(displayed)
+                .frame(width: 104, alignment: .trailing)
         }
     }
 

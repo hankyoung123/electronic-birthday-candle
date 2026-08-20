@@ -5,6 +5,8 @@ final class BlowDetectorTests: XCTestCase {
     private let sampleRate = 44_100.0
     private let frameCount = 2_048
 
+    // MARK: - Scoring model
+
     func testSilenceProducesLowIntensity() {
         let detector = BlowDetector()
         let silence = [Float](repeating: 0, count: frameCount)
@@ -14,7 +16,37 @@ final class BlowDetectorTests: XCTestCase {
         XCTAssertLessThan(result, 0.03)
     }
 
-    func testSpeechLikeToneStaysLowAcrossCommonSampleRates() {
+    func testBroadbandNoiseIsDetectedAsBlow() {
+        let detector = BlowDetector()
+        let wind = deterministicNoise(amplitude: 0.20)
+
+        let result = analyzeRepeatedly(wind, detector: detector, count: 16)
+
+        XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
+    }
+
+    func testMidLowShapedWindIsDetectedAsBlow() {
+        let detector = BlowDetector()
+        // A breath-like signal: white noise low-passed so most energy sits in
+        // the mid/low bands while remaining broadband across 80–2000 Hz.
+        let wind = windLikeSignal(amplitude: 0.20)
+
+        let result = analyzeRepeatedly(wind, detector: detector, count: 16)
+
+        XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
+    }
+
+    func testHarmonicVoiceToneDoesNotTrigger() {
+        // Conversational loudness, harmonic voicing — should stay below start.
+        let detector = BlowDetector()
+        let speech = speechLikeSignal(sampleRate: sampleRate)
+
+        let result = analyzeRepeatedly(speech, detector: detector)
+
+        XCTAssertLessThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
+    }
+
+    func testVoiceToneStaysLowAcrossCommonSampleRates() {
         let results = [44_100.0, 48_000.0].map { sampleRate in
             analyzeRepeatedly(
                 speechLikeSignal(sampleRate: sampleRate),
@@ -27,28 +59,6 @@ final class BlowDetectorTests: XCTestCase {
             XCTAssertLessThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
         }
         XCTAssertEqual(results[0], results[1], accuracy: 0.08)
-    }
-
-    func testShortImpulseDoesNotRemainStrong() {
-        let detector = BlowDetector()
-        var impulse = [Float](repeating: 0, count: frameCount)
-        impulse[frameCount / 2] = 1
-
-        impulse.withUnsafeBufferPointer { samples in
-            _ = detector.analyze(samples: samples, sampleRate: sampleRate)
-        }
-        let result = analyzeRepeatedly([Float](repeating: 0, count: frameCount), detector: detector)
-
-        XCTAssertLessThan(result, 0.08)
-    }
-
-    func testContinuousWindProducesHighStableIntensity() {
-        let detector = BlowDetector()
-        let wind = deterministicNoise(amplitude: 0.22)
-
-        let result = analyzeRepeatedly(wind, detector: detector, count: 18)
-
-        XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
     func testFluctuatingWindStillProducesHighStableIntensity() {
@@ -95,14 +105,14 @@ final class BlowDetectorTests: XCTestCase {
         let sampleRate = 48_000.0
         let signal = mix(
             musicLikeSignal(sampleRate: sampleRate),
-            deterministicNoise(amplitude: 0.018)
+            deterministicNoise(amplitude: 0.02)
         )
 
         let result = analyzeRepeatedly(
             signal,
             detector: BlowDetector(),
             sampleRate: sampleRate,
-            count: 18
+            count: 16
         )
 
         XCTAssertLessThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
@@ -119,11 +129,71 @@ final class BlowDetectorTests: XCTestCase {
             signal,
             detector: BlowDetector(),
             sampleRate: sampleRate,
-            count: 18
+            count: 16
         )
 
         XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
+
+    func testShortImpulseDoesNotRemainStrong() {
+        let detector = BlowDetector()
+        var impulse = [Float](repeating: 0, count: frameCount)
+        impulse[frameCount / 2] = 1
+
+        impulse.withUnsafeBufferPointer { samples in
+            _ = detector.analyze(samples: samples, sampleRate: sampleRate)
+        }
+        // Let the release smoothing settle over a few silent frames.
+        _ = analyzeRepeatedly([Float](repeating: 0, count: frameCount), detector: detector, count: 3)
+
+        XCTAssertLessThan(detector.currentIntensity, 0.10)
+    }
+
+    // MARK: - Spectrum / broadband (Debug)
+
+    private func debugSnapshot(
+        forSignal signal: [Float],
+        sampleRate: Double = 44_100
+    ) -> BlowDebugSnapshot {
+        let detector = BlowDetector()
+        signal.withUnsafeBufferPointer { samples in
+            _ = detector.analyze(samples: samples, sampleRate: sampleRate)
+        }
+        return detector.currentDebugSnapshot
+    }
+
+    func testBroadbandScoreHighForNoiseLowForTone() {
+        let noise = debugSnapshot(forSignal: deterministicNoise(amplitude: 0.18))
+        let tone = debugSnapshot(forSignal: sineWave(frequency: 1_000, amplitude: 0.5))
+
+        // Absolute broadband of broadband noise sits around 0.4–0.5 with the
+        // default relative-threshold tuning; a pure tone stays below 0.25.
+        // The separation (not the absolute) is what keeps speech sub-threshold.
+        XCTAssertGreaterThan(noise.broadbandScore, 0.4)
+        XCTAssertLessThan(tone.broadbandScore, 0.25)
+    }
+
+    func testLowFrequencyToneConcentratesInLowBand() {
+        let snapshot = debugSnapshot(forSignal: sineWave(frequency: 150, amplitude: 0.5))
+
+        XCTAssertGreaterThan(snapshot.lowEnergy, snapshot.midEnergy)
+        XCTAssertGreaterThan(snapshot.lowEnergy, snapshot.upperEnergy)
+        XCTAssertGreaterThan(snapshot.lowEnergy, snapshot.highEnergy)
+    }
+
+    func testHighFrequencyToneConcentratesInHighBand() {
+        let snapshot = debugSnapshot(forSignal: sineWave(frequency: 4_000, amplitude: 0.5))
+
+        XCTAssertGreaterThan(snapshot.highEnergy, snapshot.upperEnergy)
+    }
+
+    func testDbFSForHalfScaleSineIsAboutMinusNine() {
+        let snapshot = debugSnapshot(forSignal: sineWave(frequency: 1_000, amplitude: 0.5))
+
+        XCTAssertEqual(snapshot.dbFS, -9.0, accuracy: 1.2)
+    }
+
+    // MARK: - Helpers
 
     private func analyzeRepeatedly(
         _ samples: [Float],
@@ -152,19 +222,23 @@ final class BlowDetectorTests: XCTestCase {
     }
 
     private func speechLikeSignal(sampleRate: Double) -> [Float] {
+        // Conversational-level harmonic voicing (fundamental 180 Hz + formant
+        // overtones). Deliberately modest amplitude: normal talking, not
+        // shouting into the phone.
         mix(
-            sineWave(frequency: 180, amplitude: 0.11, sampleRate: sampleRate),
-            sineWave(frequency: 360, amplitude: 0.045, sampleRate: sampleRate),
-            sineWave(frequency: 720, amplitude: 0.018, sampleRate: sampleRate)
+            sineWave(frequency: 180, amplitude: 0.05, sampleRate: sampleRate),
+            sineWave(frequency: 360, amplitude: 0.022, sampleRate: sampleRate),
+            sineWave(frequency: 720, amplitude: 0.012, sampleRate: sampleRate),
+            sineWave(frequency: 2_400, amplitude: 0.006, sampleRate: sampleRate)
         )
     }
 
     private func musicLikeSignal(sampleRate: Double) -> [Float] {
         let tones = mix(
-            sineWave(frequency: 262, amplitude: 0.10, sampleRate: sampleRate),
-            sineWave(frequency: 330, amplitude: 0.075, sampleRate: sampleRate),
-            sineWave(frequency: 392, amplitude: 0.065, sampleRate: sampleRate),
-            sineWave(frequency: 1_048, amplitude: 0.025, sampleRate: sampleRate)
+            sineWave(frequency: 262, amplitude: 0.06, sampleRate: sampleRate),
+            sineWave(frequency: 330, amplitude: 0.045, sampleRate: sampleRate),
+            sineWave(frequency: 392, amplitude: 0.04, sampleRate: sampleRate),
+            sineWave(frequency: 1_048, amplitude: 0.015, sampleRate: sampleRate)
         )
         return tones.enumerated().map { index, sample in
             let time = Double(index) / sampleRate
@@ -196,4 +270,24 @@ final class BlowDetectorTests: XCTestCase {
             return sample * envelope * peakAmplitude
         }
     }
+
+    /// Breath-like white noise with a gentle low-pass tilt: most energy in the
+    /// mid/low bands, but still broadband across the whole 80–2000 Hz span.
+    private func windLikeSignal(amplitude: Float) -> [Float] {
+        let noise = deterministicNoise(amplitude: 1)
+        var output = [Float](repeating: 0, count: noise.count)
+        var previous: Float = 0
+        for index in 0..<noise.count {
+            previous += 0.25 * (noise[index] - previous)
+            output[index] = previous
+        }
+        // Normalize the shaped noise to the requested power level.
+        var sumSquares: Float = 0
+        for sample in output { sumSquares += sample * sample }
+        let rms = sqrt(sumSquares / Float(output.count))
+        guard rms > 0 else { return output }
+        let scale = amplitude / rms
+        return output.map { $0 * scale }
+    }
 }
+

@@ -1,20 +1,50 @@
+import Accelerate
 import Foundation
 
 #if DEBUG
+/// Full-frame diagnostics for the Inspector. Carries every metric that drives
+/// (or informs) the new blow score, so device tuning does not have to guess.
 struct BlowDebugSnapshot: Sendable {
     let rms: Float
-    let texture: Float
+    let dbFS: Float
+    let lowEnergy: Float
+    let midEnergy: Float
+    let upperEnergy: Float
+    let highEnergy: Float
+    let windEnergy: Float
+    let energyScore: Float
+    let broadbandScore: Float
     let rawScore: Float
     let smoothedIntensity: Float
+    let flatness: Float
 
     static let zero = BlowDebugSnapshot(
         rms: 0,
-        texture: 0,
+        dbFS: -120,
+        lowEnergy: 0,
+        midEnergy: 0,
+        upperEnergy: 0,
+        highEnergy: 0,
+        windEnergy: 0,
+        energyScore: 0,
+        broadbandScore: 0,
         rawScore: 0,
-        smoothedIntensity: 0
+        smoothedIntensity: 0,
+        flatness: 0
     )
 }
 #endif
+
+/// Core per-frame band analysis (also used in Release — it IS the detector).
+private struct BandAnalysis {
+    let lowEnergy: Float
+    let midEnergy: Float
+    let upperEnergy: Float
+    let highEnergy: Float
+    let windEnergy: Float
+    let broadbandScore: Float
+    let flatness: Float
+}
 
 final class BlowDetector: @unchecked Sendable {
     private let configuration: BlowDetectionConfiguration
@@ -24,62 +54,74 @@ final class BlowDetector: @unchecked Sendable {
     private var debugSnapshot: BlowDebugSnapshot = .zero
     #endif
 
+    // Reused FFT scratch. The FFT now runs on every frame in every build
+    // because band energy + broadband are the primary detection features.
+    private let spectrumFFTSize = 1_024
+    private var fftSetup: FFTSetup?
+    private var spectrumInterleaved: [Float] = []
+    private var spectrumReal: [Float] = []
+    private var spectrumImag: [Float] = []
+    private var spectrumPower: [Float] = []
+    private var spectrumWindow: [Float] = []
+
     init(configuration: BlowDetectionConfiguration = .standard) {
         self.configuration = configuration
+    }
+
+    deinit {
+        if let fftSetup { vDSP_destroy_fftsetup(fftSetup) }
     }
 
     @discardableResult
     func analyze(samples: UnsafeBufferPointer<Float>, sampleRate: Double) -> Float {
         guard samples.count > 8, sampleRate > 0 else { return currentIntensity }
+        let config = configuration.snapshot()
 
         var sumSquares: Float = 0
-        var differenceSquares: Float = 0
-        var previous = samples[0]
-
         for sample in samples {
             sumSquares += sample * sample
-            let difference = sample - previous
-            differenceSquares += difference * difference
-            previous = sample
         }
+        let rms = sqrt(sumSquares / Float(samples.count))
 
-        let count = Float(samples.count)
-        let rms = sqrt(sumSquares / count)
-        let differenceRMS = sqrt(differenceSquares / count)
-        let sampleRateScale = Float(sampleRate / configuration.textureReferenceSampleRate)
-        let normalizedDifferenceRMS = differenceRMS * sampleRateScale
-        let highFrequencyRatio = rms > 0.000_001
-            ? min(normalizedDifferenceRMS / (rms * 1.42), 1)
-            : 0
+        let analysis = analyzeBands(samples, sampleRate: sampleRate, rms: rms, config: config)
 
         let energyScore = normalized(
             rms,
-            lower: configuration.silenceFloorRMS,
-            upper: configuration.fullScaleRMS
+            lower: config.silenceFloorRMS,
+            upper: config.fullScaleRMS
         )
-        let textureScore = normalized(
-            highFrequencyRatio,
-            lower: configuration.minimumHighFrequencyRatio,
-            upper: configuration.fullHighFrequencyRatio
+        let broadbandScore = analysis.broadbandScore
+        // Additive mix — no hard energy × texture gate. A loud tone can climb
+        // energy, and a breath climbs both energy and broadband; speech rarely
+        // climbs broadband, which is what keeps it sub-threshold.
+        let rawScore = min(
+            max(
+                config.energyScoreWeight * energyScore
+                    + config.broadbandScoreWeight * broadbandScore,
+                0
+            ),
+            1
         )
-        // Energy is primary; texture only nudges the score.
-        // This prevents real breath noise with less high-frequency content
-        // from being multiplied down to zero.
-        let textureInfluence = configuration.textureBaseline
-            + configuration.textureWeight * textureScore
-        let rawScore = energyScore * min(textureInfluence, 1)
 
         return lock.withLock {
             let coefficient = rawScore > smoothedIntensity
-                ? configuration.attackSmoothing
-                : configuration.releaseSmoothing
+                ? config.attackSmoothing
+                : config.releaseSmoothing
             smoothedIntensity += (rawScore - smoothedIntensity) * coefficient
             #if DEBUG
             debugSnapshot = BlowDebugSnapshot(
                 rms: rms,
-                texture: textureScore,
+                dbFS: rms > 0 ? max(-120, 20 * log10(rms)) : -120,
+                lowEnergy: analysis.lowEnergy,
+                midEnergy: analysis.midEnergy,
+                upperEnergy: analysis.upperEnergy,
+                highEnergy: analysis.highEnergy,
+                windEnergy: analysis.windEnergy,
+                energyScore: energyScore,
+                broadbandScore: broadbandScore,
                 rawScore: rawScore,
-                smoothedIntensity: smoothedIntensity
+                smoothedIntensity: smoothedIntensity,
+                flatness: analysis.flatness
             )
             #endif
             return smoothedIntensity
@@ -108,5 +150,156 @@ final class BlowDetector: @unchecked Sendable {
     private func normalized(_ value: Float, lower: Float, upper: Float) -> Float {
         guard upper > lower else { return 0 }
         return min(max((value - lower) / (upper - lower), 0), 1)
+    }
+
+    // MARK: - Band + broadband analysis
+
+    private func analyzeBands(
+        _ samples: UnsafeBufferPointer<Float>,
+        sampleRate: Double,
+        rms: Float,
+        config: BlowDetectionParameters
+    ) -> BandAnalysis {
+        let n = spectrumFFTSize
+        ensureFFTScratch(fftSize: n)
+        guard let setup = fftSetup else {
+            return BandAnalysis(
+                lowEnergy: 0, midEnergy: 0, upperEnergy: 0, highEnergy: 0,
+                windEnergy: 0, broadbandScore: 0, flatness: 0
+            )
+        }
+
+        let count = min(samples.count, n)
+        let log2n = vDSP_Length(log2(Double(n)))
+
+        // The interleaved buffer viewed as (real, imag) complex pairs matches
+        // exactly the even/odd packing vDSP_fft_zrip expects for a forward
+        // transform of a real signal.
+        let window = spectrumWindow
+        spectrumInterleaved.withUnsafeMutableBufferPointer { inter in
+            for i in 0..<count {
+                inter[i] = samples[i] * window[i]
+            }
+            if count < n {
+                for i in count..<n { inter[i] = 0 }
+            }
+            inter.withUnsafeBufferPointer { interPtr in
+                guard let base = interPtr.baseAddress else { return }
+                let complexPtr = UnsafeRawPointer(base).assumingMemoryBound(to: DSPComplex.self)
+                spectrumReal.withUnsafeMutableBufferPointer { realPtr in
+                    spectrumImag.withUnsafeMutableBufferPointer { imagPtr in
+                        var split = DSPSplitComplex(
+                            realp: realPtr.baseAddress!,
+                            imagp: imagPtr.baseAddress!
+                        )
+                        vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(n / 2))
+                        vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
+                        spectrumPower.withUnsafeMutableBufferPointer { powerPtr in
+                            vDSP_zvmags(&split, 1, powerPtr.baseAddress!, 1, vDSP_Length(n / 2))
+                        }
+                    }
+                }
+            }
+        }
+
+        let power = spectrumPower
+        let binWidth = sampleRate / Double(n)
+
+        func bandLower(_ lowerHz: Double) -> Int {
+            max(1, Int((lowerHz / binWidth).rounded(.down)))
+        }
+        func bandUpper(_ upperHz: Double) -> Int {
+            min(n / 2, Int((upperHz / binWidth).rounded(.down)))
+        }
+
+        let lowStart = bandLower(config.lowBandLowerHz)
+        let lowEnd = bandUpper(config.lowBandUpperHz)
+        let midEnd = bandUpper(config.midBandUpperHz)
+        let upperEnd = bandUpper(config.upperBandUpperHz)
+        let highEnd = bandUpper(config.highBandUpperHz)
+
+        func meanPower(_ start: Int, _ end: Int) -> Float {
+            guard end > start else { return 0 }
+            var sum: Float = 0
+            power.withUnsafeBufferPointer { p in
+                guard let base = p.baseAddress else { return }
+                vDSP_sve(base + start, 1, &sum, vDSP_Length(end - start))
+            }
+            return sum / Float(end - start)
+        }
+
+        let lowEnergy = meanPower(lowStart, lowEnd)
+        let midEnergy = meanPower(lowEnd, midEnd)
+        let upperEnergy = meanPower(midEnd, upperEnd)
+        let highEnergy = meanPower(upperEnd, highEnd)
+
+        let windEnergy = config.lowBandWeight * lowEnergy
+            + config.midBandWeight * midEnergy
+            + config.upperBandWeight * upperEnergy
+            + config.highBandWeight * highEnergy
+
+        // Broadband: how much of [broadbandLower, broadbandUpper) rose at once.
+        let bbStart = bandLower(config.broadbandLowerHz)
+        let bbEnd = bandUpper(config.broadbandUpperHz)
+        var broadbandScore: Float = 0
+        var flatness: Float = 0
+        if bbEnd > bbStart {
+            var maxPower: Float = 0
+            var powerSum: Float = 0
+            power.withUnsafeBufferPointer { p in
+                guard let base = p.baseAddress else { return }
+                let length = vDSP_Length(bbEnd - bbStart)
+                vDSP_maxv(base + bbStart, 1, &maxPower, length)
+                vDSP_sve(base + bbStart, 1, &powerSum, length)
+            }
+            let bandCount = bbEnd - bbStart
+            let arithmeticMean = powerSum / Float(bandCount)
+
+            var logSum: Float = 0
+            var activeCount = 0
+            for k in bbStart..<bbEnd {
+                let pk = max(power[k], 1e-12)
+                logSum += log(pk)
+                if power[k] >= maxPower * config.broadbandRelativeThreshold {
+                    activeCount += 1
+                }
+            }
+            let geometricMean = exp(logSum / Float(bandCount))
+            flatness = arithmeticMean > 0 ? geometricMean / arithmeticMean : 0
+
+            if maxPower > 1e-9, rms >= config.silenceFloorRMS {
+                let proportion = Float(activeCount) / Float(bandCount)
+                broadbandScore = normalized(
+                    proportion,
+                    lower: config.broadbandActiveMinProportion,
+                    upper: config.broadbandActiveFullProportion
+                )
+            }
+        }
+
+        return BandAnalysis(
+            lowEnergy: lowEnergy,
+            midEnergy: midEnergy,
+            upperEnergy: upperEnergy,
+            highEnergy: highEnergy,
+            windEnergy: windEnergy,
+            broadbandScore: broadbandScore,
+            flatness: flatness
+        )
+    }
+
+    private func ensureFFTScratch(fftSize: Int) {
+        guard fftSetup == nil, spectrumInterleaved.isEmpty else { return }
+        fftSetup = vDSP_create_fftsetup(
+            vDSP_Length(log2(Double(fftSize))),
+            FFTRadix(kFFTRadix2)
+        )
+        spectrumInterleaved = [Float](repeating: 0, count: fftSize)
+        spectrumReal = [Float](repeating: 0, count: fftSize / 2)
+        spectrumImag = [Float](repeating: 0, count: fftSize / 2)
+        spectrumPower = [Float](repeating: 0, count: fftSize / 2)
+        var window = [Float](repeating: 0, count: fftSize)
+        vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        spectrumWindow = window
     }
 }

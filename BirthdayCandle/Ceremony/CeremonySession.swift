@@ -19,6 +19,59 @@ enum CeremonyNotice: String, Identifiable {
     }
 }
 
+#if DEBUG
+/// One timestamped observation, recorded on each intensity tick.
+struct TimedSpectrum: Sendable {
+    let uptime: TimeInterval
+    let snapshot: BlowDebugSnapshot
+    let blowScore: Float
+}
+
+/// Rolling window statistics (average + peak) for the Inspector's “Copy 3s
+/// Avg”. `dbFS` is in dB; every other value is 0–1 normalized.
+struct SpectrumRollingSummary: Sendable {
+    let sampleCount: Int
+    let dbFSAverage: Float
+    let dbFSPeak: Float
+    let lowEnergyAverage: Float
+    let lowEnergyPeak: Float
+    let midEnergyAverage: Float
+    let midEnergyPeak: Float
+    let upperEnergyAverage: Float
+    let upperEnergyPeak: Float
+    let highEnergyAverage: Float
+    let highEnergyPeak: Float
+    let energyScoreAverage: Float
+    let energyScorePeak: Float
+    let broadbandAverage: Float
+    let broadbandPeak: Float
+    let blowScoreAverage: Float
+    let blowScorePeak: Float
+    let flatnessAverage: Float
+
+    static let empty = SpectrumRollingSummary(
+        sampleCount: 0,
+        dbFSAverage: -120,
+        dbFSPeak: -120,
+        lowEnergyAverage: 0,
+        lowEnergyPeak: 0,
+        midEnergyAverage: 0,
+        midEnergyPeak: 0,
+        upperEnergyAverage: 0,
+        upperEnergyPeak: 0,
+        highEnergyAverage: 0,
+        highEnergyPeak: 0,
+        energyScoreAverage: 0,
+        energyScorePeak: 0,
+        broadbandAverage: 0,
+        broadbandPeak: 0,
+        blowScoreAverage: 0,
+        blowScorePeak: 0,
+        flatnessAverage: 0
+    )
+}
+#endif
+
 @MainActor
 @Observable
 final class CeremonySession {
@@ -35,6 +88,9 @@ final class CeremonySession {
     private var ceremonyTask: Task<Void, Never>?
     private var strongBlowDuration: TimeInterval = 0
     private var lastBlowSampleTime: TimeInterval?
+    #if DEBUG
+    private var spectrumHistory: [TimedSpectrum] = []
+    #endif
 
     init(
         audioEngine: AudioEngine? = nil,
@@ -120,6 +176,9 @@ final class CeremonySession {
         strongBlowDuration = 0
         lastBlowSampleTime = nil
         extinguishedAt = nil
+        #if DEBUG
+        spectrumHistory.removeAll(keepingCapacity: true)
+        #endif
         transition(to: .ready)
     }
 
@@ -133,23 +192,35 @@ final class CeremonySession {
         }
         blowIntensity = min(max(intensity, 0), 1)
 
+        #if DEBUG
+        recordSpectrumSample(at: time)
+        #endif
+
         let elapsed = lastBlowSampleTime.map { min(max(time - $0, 0), 0.1) } ?? 0
         lastBlowSampleTime = time
 
-        if blowIntensity >= blowConfiguration.strongBlowThreshold {
+        let parameters = blowConfiguration.snapshot()
+        if strongBlowDuration > 0 {
+            // Already counting a blow: keep accruing while the user is still
+            // blowing meaningfully (above the maintain threshold), and slowly
+            // lose progress below it.
+            if blowIntensity >= parameters.strongBlowMaintainThreshold {
+                strongBlowDuration += elapsed
+            } else {
+                strongBlowDuration = max(
+                    0,
+                    strongBlowDuration - elapsed * parameters.strongBlowDecayRate
+                )
+            }
+        } else if blowIntensity >= parameters.strongBlowThreshold {
+            // First crossing of the start threshold begins accumulation.
             strongBlowDuration += elapsed
-        } else if blowIntensity >= blowConfiguration.strongBlowMaintainThreshold {
-            // Short dips during a real blow should not erase already-earned
-            // progress. Keep the accumulator alive while the user is still
-            // blowing meaningfully.
-        } else {
-            strongBlowDuration = max(
-                0,
-                strongBlowDuration - elapsed * blowConfiguration.strongBlowDecayRate
-            )
         }
 
-        if strongBlowDuration >= blowConfiguration.requiredStrongBlowDuration {
+        // A 5 ms tolerance absorbs float rounding in the accumulated time
+        // (e.g. four 0.1 s ticks summing to 0.3999…9 instead of 0.4), so a
+        // real blow that reached the required duration is never lost.
+        if strongBlowDuration + 0.005 >= parameters.requiredStrongBlowDuration {
             extinguish()
         }
     }
@@ -180,6 +251,9 @@ final class CeremonySession {
         blowIntensity = 0
         strongBlowDuration = 0
         lastBlowSampleTime = nil
+        #if DEBUG
+        spectrumHistory.removeAll(keepingCapacity: true)
+        #endif
         transition(to: .ready)
         switch error {
         case .microphonePermissionDenied:
@@ -205,6 +279,88 @@ final class CeremonySession {
         audioEngine?.currentBlowDebugSnapshot ?? .zero
     }
 
+    var debugSpectrumRollingSummary: SpectrumRollingSummary {
+        guard !spectrumHistory.isEmpty else { return .empty }
+        var count = 0
+        var dbSum: Float = 0
+        var dbPeak: Float = -120
+        var lowSum: Float = 0
+        var lowPeak: Float = 0
+        var midSum: Float = 0
+        var midPeak: Float = 0
+        var upperSum: Float = 0
+        var upperPeak: Float = 0
+        var highSum: Float = 0
+        var highPeak: Float = 0
+        var energySum: Float = 0
+        var energyPeak: Float = 0
+        var broadbandSum: Float = 0
+        var broadbandPeak: Float = 0
+        var blowSum: Float = 0
+        var blowPeak: Float = 0
+        var flatSum: Float = 0
+
+        for entry in spectrumHistory {
+            count += 1
+            let snapshot = entry.snapshot
+            dbSum += snapshot.dbFS
+            dbPeak = max(dbPeak, snapshot.dbFS)
+            lowSum += snapshot.lowEnergy
+            lowPeak = max(lowPeak, snapshot.lowEnergy)
+            midSum += snapshot.midEnergy
+            midPeak = max(midPeak, snapshot.midEnergy)
+            upperSum += snapshot.upperEnergy
+            upperPeak = max(upperPeak, snapshot.upperEnergy)
+            highSum += snapshot.highEnergy
+            highPeak = max(highPeak, snapshot.highEnergy)
+            energySum += snapshot.energyScore
+            energyPeak = max(energyPeak, snapshot.energyScore)
+            broadbandSum += snapshot.broadbandScore
+            broadbandPeak = max(broadbandPeak, snapshot.broadbandScore)
+            blowSum += entry.blowScore
+            blowPeak = max(blowPeak, entry.blowScore)
+            flatSum += snapshot.flatness
+        }
+
+        let total = Float(count)
+        return SpectrumRollingSummary(
+            sampleCount: count,
+            dbFSAverage: dbSum / total,
+            dbFSPeak: dbPeak,
+            lowEnergyAverage: lowSum / total,
+            lowEnergyPeak: lowPeak,
+            midEnergyAverage: midSum / total,
+            midEnergyPeak: midPeak,
+            upperEnergyAverage: upperSum / total,
+            upperEnergyPeak: upperPeak,
+            highEnergyAverage: highSum / total,
+            highEnergyPeak: highPeak,
+            energyScoreAverage: energySum / total,
+            energyScorePeak: energyPeak,
+            broadbandAverage: broadbandSum / total,
+            broadbandPeak: broadbandPeak,
+            blowScoreAverage: blowSum / total,
+            blowScorePeak: blowPeak,
+            flatnessAverage: flatSum / total
+        )
+    }
+
+    /// Called on every intensity tick (~30 Hz) to keep a rolling 3-second
+    /// history of observations for the Inspector's “Copy 3s Avg”.
+    private func recordSpectrumSample(at uptime: TimeInterval) {
+        spectrumHistory.append(
+            TimedSpectrum(
+                uptime: uptime,
+                snapshot: audioEngine?.currentBlowDebugSnapshot ?? .zero,
+                blowScore: blowIntensity
+            )
+        )
+        let cutoff = uptime - 3.0
+        if let firstStale = spectrumHistory.firstIndex(where: { $0.uptime < cutoff }) {
+            spectrumHistory.removeFirst(firstStale)
+        }
+    }
+
     var debugStrongBlowDuration: TimeInterval { strongBlowDuration }
 
     var debugStrongBlowStartThreshold: Float {
@@ -219,8 +375,44 @@ final class CeremonySession {
         blowConfiguration.requiredStrongBlowDuration
     }
 
+    var debugStrongBlowDecayRate: Double {
+        blowConfiguration.strongBlowDecayRate
+    }
+
+    var debugEnergyScoreWeight: Float {
+        blowConfiguration.energyScoreWeight
+    }
+
+    var debugBroadbandScoreWeight: Float {
+        blowConfiguration.broadbandScoreWeight
+    }
+
     var debugMusicVolume: Float {
         audioEngine?.currentMusicVolume ?? 0
+    }
+
+    func setDebugStrongBlowStartThreshold(_ value: Float) {
+        blowConfiguration.strongBlowThreshold = min(max(value, 0), 1)
+    }
+
+    func setDebugStrongBlowMaintainThreshold(_ value: Float) {
+        blowConfiguration.strongBlowMaintainThreshold = min(max(value, 0), 1)
+    }
+
+    func setDebugRequiredStrongBlowDuration(_ value: TimeInterval) {
+        blowConfiguration.requiredStrongBlowDuration = max(value, 0)
+    }
+
+    func setDebugStrongBlowDecayRate(_ value: Double) {
+        blowConfiguration.strongBlowDecayRate = max(value, 0)
+    }
+
+    func setDebugEnergyScoreWeight(_ value: Float) {
+        blowConfiguration.energyScoreWeight = min(max(value, 0), 1)
+    }
+
+    func setDebugBroadbandScoreWeight(_ value: Float) {
+        blowConfiguration.broadbandScoreWeight = min(max(value, 0), 1)
     }
 
     func setDebugMusicVolume(_ volume: Float) {

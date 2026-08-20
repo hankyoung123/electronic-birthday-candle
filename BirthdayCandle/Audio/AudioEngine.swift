@@ -269,27 +269,28 @@ final class AudioEngine {
             options: [.defaultToSpeaker]
         )
         try session.setActive(true)
-        try preferBuiltInMicrophone(on: session)
+        preferBuiltInMicrophone(on: session)
         try session.overrideOutputAudioPort(.speaker)
         updateCurrentInputDescription(from: session)
     }
 
-    private func preferBuiltInMicrophone(on session: AVAudioSession) throws {
+    private func preferBuiltInMicrophone(on session: AVAudioSession) {
         guard let builtInMicrophone = session.availableInputs?.first(where: {
             $0.portType == .builtInMic
         }) else {
             return
         }
 
-        try session.setPreferredInput(builtInMicrophone)
+        // Mic preference is best-effort and must never abort the ceremony.
+        // Prefer the front-facing built-in microphone (usually the best pick
+        // for blowing at the phone screen), but if that preference fails the
+        // system keeps the default built-in mic and recording still works.
+        try? session.setPreferredInput(builtInMicrophone)
 
-        // Prefer the front-facing built-in microphone when available. It is
-        // usually the best pick for blowing at the phone screen, and avoids
-        // letting the system fall back to a bottom or Bluetooth microphone.
         if let frontSource = builtInMicrophone.dataSources?.first(where: {
             $0.orientation == .front
         }) {
-            try builtInMicrophone.setPreferredDataSource(frontSource)
+            try? builtInMicrophone.setPreferredDataSource(frontSource)
         }
     }
 

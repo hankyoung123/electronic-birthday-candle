@@ -109,6 +109,66 @@ final class CeremonySessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .extinguishing)
     }
 
+    func testAboveMaintainButBelowStartDoesNotBeginAccumulation() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        // 0.35 sits above the maintain threshold (0.25) but below the start
+        // threshold (0.45). Before the start threshold is crossed once, no
+        // blow time may accrue — speech-like energy must never slowly count
+        // toward an extinguish.
+        session.receiveBlowIntensity(0.35, at: 1)
+        session.receiveBlowIntensity(0.35, at: 1.1)
+        session.receiveBlowIntensity(0.35, at: 1.2)
+
+        XCTAssertEqual(session.phase, .lit)
+        XCTAssertEqual(session.debugStrongBlowDuration, 0, accuracy: 0.0001)
+    }
+
+    func testMaintainLevelAfterStartKeepsAccumulating() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        // Once the start threshold is crossed, the blow keeps counting while
+        // intensity stays above the maintain threshold, even if it dips below
+        // the start threshold in the middle of a real (fluctuating) blow.
+        session.receiveBlowIntensity(0.9, at: 1)
+        session.receiveBlowIntensity(0.9, at: 1.1)
+        session.receiveBlowIntensity(0.5, at: 1.2)
+        session.receiveBlowIntensity(0.5, at: 1.3)
+        session.receiveBlowIntensity(0.5, at: 1.4)
+        session.receiveBlowIntensity(0.5, at: 1.5)
+
+        XCTAssertEqual(session.phase, .extinguishing)
+    }
+
+    func testDecayedProgressRequiresCrossingStartAgain() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        // Accumulate a little, then fall silent long enough for the slow decay
+        // to erase everything back to zero. Sub-start maintain-level energy
+        // (0.30, above maintain 0.25) afterwards must NOT resume the count; a
+        // fresh crossing of the start threshold is required.
+        session.receiveBlowIntensity(0.9, at: 1)
+        session.receiveBlowIntensity(0.9, at: 1.1)
+        session.receiveBlowIntensity(0.05, at: 1.2)
+        session.receiveBlowIntensity(0.05, at: 1.3)
+        session.receiveBlowIntensity(0.05, at: 1.4)
+        session.receiveBlowIntensity(0.3, at: 1.5)
+        session.receiveBlowIntensity(0.3, at: 1.6)
+        session.receiveBlowIntensity(0.3, at: 1.7)
+        session.receiveBlowIntensity(0.9, at: 1.8)
+        session.receiveBlowIntensity(0.9, at: 1.9)
+        session.receiveBlowIntensity(0.9, at: 2.0)
+        session.receiveBlowIntensity(0.9, at: 2.1)
+
+        XCTAssertEqual(session.phase, .extinguishing)
+    }
+
     func testExtinguishingCompletesInsideCollapseWindow() async {
         XCTAssertTrue((0.15...0.25).contains(CeremonyTiming.extinguishingDuration))
 
