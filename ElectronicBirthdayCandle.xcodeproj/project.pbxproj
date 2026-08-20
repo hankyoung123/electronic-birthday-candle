@@ -1,0 +1,478 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* BirthdayCandleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* BirthdayCandleApp.swift */; };
+		A10000000000000000000002 /* CeremonyPhase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* CeremonyPhase.swift */; };
+		A10000000000000000000003 /* CeremonySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* CeremonySession.swift */; };
+		A10000000000000000000004 /* CandleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* CandleView.swift */; };
+		A10000000000000000000005 /* CeremonyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* CeremonyView.swift */; };
+		A10000000000000000000006 /* MusicTrack.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* MusicTrack.swift */; };
+		A10000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* Assets.xcassets */; };
+		A10000000000000000000008 /* CeremonySessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* CeremonySessionTests.swift */; };
+		A10000000000000000000009 /* FlameView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* FlameView.swift */; };
+		A1000000000000000000000A /* BlowDetectionConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* BlowDetectionConfiguration.swift */; };
+		A1000000000000000000000B /* BlowDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* BlowDetector.swift */; };
+		A1000000000000000000000C /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* AudioEngine.swift */; };
+		A1000000000000000000000D /* BlowDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* BlowDetectorTests.swift */; };
+		A1000000000000000000000E /* SmokeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* SmokeView.swift */; };
+		A1000000000000000000000F /* MusicPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* MusicPicker.swift */; };
+		A10000000000000000000010 /* classic.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* classic.wav */; };
+		A10000000000000000000011 /* piano.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* piano.wav */; };
+		A10000000000000000000012 /* music-box.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* music-box.wav */; };
+		A10000000000000000000013 /* jazz.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* jazz.wav */; };
+		A10000000000000000000014 /* extinguish.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* extinguish.wav */; };
+		A10000000000000000000015 /* celebration.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* celebration.wav */; };
+		A10000000000000000000016 /* HapticEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* HapticEngine.swift */; };
+		A10000000000000000000017 /* AudioEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* AudioEngineTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A80000000000000000000001;
+			remoteInfo = BirthdayCandle;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* BirthdayCandleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BirthdayCandleApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* CeremonyPhase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyPhase.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* CeremonySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonySession.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* CandleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CandleView.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* CeremonyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonyView.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* MusicTrack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicTrack.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A20000000000000000000008 /* CeremonySessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeremonySessionTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* BirthdayCandle.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BirthdayCandle.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000A /* BirthdayCandleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BirthdayCandleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000B /* FlameView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlameView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* BlowDetectionConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlowDetectionConfiguration.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* BlowDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlowDetector.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* AudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngine.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* BlowDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlowDetectorTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* SmokeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeView.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* MusicPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPicker.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* classic.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = classic.wav; sourceTree = "<group>"; };
+		A20000000000000000000013 /* piano.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = piano.wav; sourceTree = "<group>"; };
+		A20000000000000000000014 /* music-box.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "music-box.wav"; sourceTree = "<group>"; };
+		A20000000000000000000015 /* jazz.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = jazz.wav; sourceTree = "<group>"; };
+		A20000000000000000000016 /* extinguish.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = extinguish.wav; sourceTree = "<group>"; };
+		A20000000000000000000017 /* celebration.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = celebration.wav; sourceTree = "<group>"; };
+		A20000000000000000000018 /* HapticEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticEngine.swift; sourceTree = "<group>"; };
+		A20000000000000000000019 /* AudioEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A50000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A50000000000000000000002 /* BirthdayCandle */,
+				A50000000000000000000008 /* BirthdayCandleTests */,
+				A50000000000000000000009 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A50000000000000000000002 /* BirthdayCandle */ = {
+			isa = PBXGroup;
+			children = (
+				A50000000000000000000003 /* App */,
+				A50000000000000000000004 /* Ceremony */,
+				A50000000000000000000005 /* Candle */,
+				A50000000000000000000006 /* Audio */,
+				A50000000000000000000007 /* UI */,
+				A5000000000000000000000A /* Audio */,
+				A5000000000000000000000B /* Haptics */,
+				A20000000000000000000007 /* Assets.xcassets */,
+			);
+			path = BirthdayCandle;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* BirthdayCandleApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000004 /* Ceremony */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000002 /* CeremonyPhase.swift */,
+				A20000000000000000000003 /* CeremonySession.swift */,
+			);
+			path = Ceremony;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000005 /* Candle */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000004 /* CandleView.swift */,
+				A2000000000000000000000B /* FlameView.swift */,
+				A20000000000000000000010 /* SmokeView.swift */,
+			);
+			path = Candle;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000006 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000006 /* MusicTrack.swift */,
+				A2000000000000000000000C /* BlowDetectionConfiguration.swift */,
+				A2000000000000000000000D /* BlowDetector.swift */,
+				A2000000000000000000000E /* AudioEngine.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000007 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000005 /* CeremonyView.swift */,
+				A20000000000000000000011 /* MusicPicker.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000008 /* BirthdayCandleTests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000008 /* CeremonySessionTests.swift */,
+				A2000000000000000000000F /* BlowDetectorTests.swift */,
+				A20000000000000000000019 /* AudioEngineTests.swift */,
+			);
+			path = BirthdayCandleTests;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000009 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000009 /* BirthdayCandle.app */,
+				A2000000000000000000000A /* BirthdayCandleTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000A /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000012 /* classic.wav */,
+				A20000000000000000000013 /* piano.wav */,
+				A20000000000000000000014 /* music-box.wav */,
+				A20000000000000000000015 /* jazz.wav */,
+				A20000000000000000000016 /* extinguish.wav */,
+				A20000000000000000000017 /* celebration.wav */,
+			);
+			name = Audio;
+			path = Resources/Audio;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000000B /* Haptics */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000018 /* HapticEngine.swift */,
+			);
+			path = Haptics;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A80000000000000000000001 /* BirthdayCandle */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A70000000000000000000002 /* Build configuration list for PBXNativeTarget "BirthdayCandle" */;
+			buildPhases = (
+				A60000000000000000000001 /* Sources */,
+				A40000000000000000000001 /* Frameworks */,
+				A60000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BirthdayCandle;
+			productName = BirthdayCandle;
+			productReference = A20000000000000000000009 /* BirthdayCandle.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A80000000000000000000002 /* BirthdayCandleTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A70000000000000000000003 /* Build configuration list for PBXNativeTarget "BirthdayCandleTests" */;
+			buildPhases = (
+				A60000000000000000000003 /* Sources */,
+				A40000000000000000000002 /* Frameworks */,
+				A60000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A30000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = BirthdayCandleTests;
+			productName = BirthdayCandleTests;
+			productReference = A2000000000000000000000A /* BirthdayCandleTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A90000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					A80000000000000000000001 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					A80000000000000000000002 = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = A80000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = A70000000000000000000001 /* Build configuration list for PBXProject "ElectronicBirthdayCandle" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A50000000000000000000001;
+			productRefGroup = A50000000000000000000009 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A80000000000000000000001 /* BirthdayCandle */,
+				A80000000000000000000002 /* BirthdayCandleTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A60000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000007 /* Assets.xcassets in Resources */,
+				A10000000000000000000010 /* classic.wav in Resources */,
+				A10000000000000000000011 /* piano.wav in Resources */,
+				A10000000000000000000012 /* music-box.wav in Resources */,
+				A10000000000000000000013 /* jazz.wav in Resources */,
+				A10000000000000000000014 /* extinguish.wav in Resources */,
+				A10000000000000000000015 /* celebration.wav in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A60000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A60000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* BirthdayCandleApp.swift in Sources */,
+				A10000000000000000000002 /* CeremonyPhase.swift in Sources */,
+				A10000000000000000000003 /* CeremonySession.swift in Sources */,
+				A10000000000000000000004 /* CandleView.swift in Sources */,
+				A10000000000000000000005 /* CeremonyView.swift in Sources */,
+				A10000000000000000000006 /* MusicTrack.swift in Sources */,
+				A10000000000000000000009 /* FlameView.swift in Sources */,
+				A1000000000000000000000A /* BlowDetectionConfiguration.swift in Sources */,
+				A1000000000000000000000B /* BlowDetector.swift in Sources */,
+				A1000000000000000000000C /* AudioEngine.swift in Sources */,
+				A1000000000000000000000E /* SmokeView.swift in Sources */,
+				A1000000000000000000000F /* MusicPicker.swift in Sources */,
+				A10000000000000000000016 /* HapticEngine.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A60000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000008 /* CeremonySessionTests.swift in Sources */,
+				A1000000000000000000000D /* BlowDetectorTests.swift in Sources */,
+				A10000000000000000000017 /* AudioEngineTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A30000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A80000000000000000000001 /* BirthdayCandle */;
+			targetProxy = A30000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		B10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		B10000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = BBWJ5Z5DWC;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Candle;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Candle listens for your breath so you can blow out the flame.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hankyoung.BirthdayCandle;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B10000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = BBWJ5Z5DWC;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Candle;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Candle listens for your breath so you can blow out the flame.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hankyoung.BirthdayCandle;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		B10000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hankyoung.BirthdayCandleTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BirthdayCandle.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BirthdayCandle";
+			};
+			name = Debug;
+		};
+		B10000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hankyoung.BirthdayCandleTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BirthdayCandle.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BirthdayCandle";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A70000000000000000000001 /* Build configuration list for PBXProject "ElectronicBirthdayCandle" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000001 /* Debug */,
+				B10000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A70000000000000000000002 /* Build configuration list for PBXNativeTarget "BirthdayCandle" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000003 /* Debug */,
+				B10000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A70000000000000000000003 /* Build configuration list for PBXNativeTarget "BirthdayCandleTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000005 /* Debug */,
+				B10000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A90000000000000000000001 /* Project object */;
+}
