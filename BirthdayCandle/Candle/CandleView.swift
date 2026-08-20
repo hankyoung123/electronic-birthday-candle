@@ -34,8 +34,9 @@ struct CandleView: View {
             FlameView(blowIntensity: blowIntensity, phase: phase)
                 .frame(width: 152, height: 164)
                 .offset(y: -247)
-                .opacity(phase.showsFlame ? 1 : 0)
-                .scaleEffect(phase.showsFlame ? 1 : 0.25, anchor: .bottom)
+                .opacity(flameOpacity)
+                .scaleEffect(flameScale, anchor: .bottom)
+                .animation(flameAnimation, value: phase)
 
             if phase.showsSmoke, let extinguishedAt {
                 SmokeView(startedAt: extinguishedAt)
@@ -45,8 +46,40 @@ struct CandleView: View {
             }
         }
         .frame(width: 190, height: 420, alignment: .bottom)
-        .animation(.easeOut(duration: 0.45), value: phase)
+        .animation(.easeOut(duration: 0.24), value: phase.showsEmber)
+        .animation(.easeOut(duration: 0.45), value: phase.showsSmoke)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(phase.showsFlame ? "Lit candle" : "Unlit candle")
+    }
+
+    private var flameOpacity: Double {
+        switch phase {
+        case .lighting, .lit, .wishing:
+            1
+        case .extinguishing:
+            0.08
+        case .ready, .extinguished, .celebrating:
+            0
+        }
+    }
+
+    private var flameScale: CGFloat {
+        switch phase {
+        case .lighting, .lit, .wishing:
+            1
+        case .ready, .extinguishing, .extinguished, .celebrating:
+            0.08
+        }
+    }
+
+    private var flameAnimation: Animation {
+        switch phase {
+        case .extinguishing:
+            .easeIn(duration: CeremonyTiming.extinguishingDuration)
+        case .extinguished:
+            .linear(duration: 0.04)
+        case .ready, .lighting, .lit, .wishing, .celebrating:
+            .easeOut(duration: 0.45)
+        }
     }
 }

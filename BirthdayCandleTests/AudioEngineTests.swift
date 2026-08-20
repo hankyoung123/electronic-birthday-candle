@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class AudioEngineTests: XCTestCase {
+    func testRuntimeFailuresReachMainActorCallback() {
+        let engine = AudioEngine()
+        var receivedErrors: [AudioEngineError] = []
+        engine.onFailure = { error in
+            receivedErrors.append(error)
+        }
+
+        engine.handleRuntimeFailure(.routeRecoveryFailed)
+        engine.handleRuntimeFailure(.microphoneUnavailable)
+        engine.handleRuntimeFailure(.sessionActivationFailed)
+
+        XCTAssertEqual(
+            receivedErrors,
+            [.routeRecoveryFailed, .microphoneUnavailable, .sessionActivationFailed]
+        )
+    }
+
     func testConvertsMonoAssetBufferToStereoPlayerFormat() throws {
         let monoFormat = try XCTUnwrap(
             AVAudioFormat(standardFormatWithSampleRate: 22_050, channels: 1)

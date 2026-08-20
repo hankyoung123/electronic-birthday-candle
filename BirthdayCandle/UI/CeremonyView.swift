@@ -4,6 +4,7 @@ import SwiftUI
 struct CeremonyView: View {
     let session: CeremonySession
     @State private var activeSheet: CeremonySheet?
+    @State private var isRequestingMicrophoneAccess = false
 
     var body: some View {
         ZStack {
@@ -73,22 +74,22 @@ struct CeremonyView: View {
     private var controls: some View {
         switch session.phase {
         case .ready:
-            Button("Start") { activeSheet = .preparation }
+            Button(isRequestingMicrophoneAccess ? "Preparing…" : "Start") {
+                guard !isRequestingMicrophoneAccess else { return }
+                isRequestingMicrophoneAccess = true
+                Task {
+                    let isReady = await session.prepareMicrophoneAccess()
+                    isRequestingMicrophoneAccess = false
+                    if isReady {
+                        activeSheet = .preparation
+                    }
+                }
+            }
                 .buttonStyle(CeremonyButtonStyle())
+                .disabled(isRequestingMicrophoneAccess)
         case .lit, .wishing:
             #if DEBUG
-            VStack(spacing: 14) {
-                Slider(
-                    value: Binding(
-                        get: { Double(session.blowIntensity) },
-                        set: { session.setDevelopmentBlowIntensity(Float($0)) }
-                    ),
-                    in: 0...1
-                )
-                .tint(.orange.opacity(0.7))
-                .accessibilityLabel("Development wind intensity")
-
-            }
+            BlowInspector(session: session)
             #endif
         case .celebrating:
             Button("Again") { session.restart() }
@@ -98,6 +99,83 @@ struct CeremonyView: View {
         }
     }
 }
+
+#if DEBUG
+@MainActor
+private struct BlowInspector: View {
+    let session: CeremonySession
+
+    var body: some View {
+        let snapshot = session.debugBlowSnapshot
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Blow Inspector")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.orange.opacity(0.9))
+
+            metric("Input", session.debugInputDescription)
+            metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
+            metric("RMS", formatted(snapshot.rms))
+            metric("Texture", formatted(snapshot.texture))
+            metric("Raw", formatted(snapshot.rawScore))
+            metric("Smoothed", formatted(snapshot.smoothedIntensity))
+
+            HStack(spacing: 8) {
+                Text("Blow")
+                    .frame(width: 72, alignment: .leading)
+                ProgressView(value: Double(session.blowIntensity), total: 1)
+                    .tint(.orange)
+                Text(formatted(session.blowIntensity))
+                    .frame(width: 40, alignment: .trailing)
+            }
+
+            HStack(spacing: 8) {
+                Text("Music")
+                    .frame(width: 72, alignment: .leading)
+                Slider(
+                    value: Binding(
+                        get: { Double(session.debugMusicVolume) },
+                        set: { session.setDebugMusicVolume(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.1
+                )
+                .tint(.orange.opacity(0.72))
+                Text("\(Int((session.debugMusicVolume * 100).rounded()))%")
+                    .frame(width: 40, alignment: .trailing)
+            }
+
+            metric(
+                "Strong",
+                String(
+                    format: "%.2f / %.2f s",
+                    session.debugStrongBlowDuration,
+                    session.debugRequiredStrongBlowDuration
+                )
+            )
+        }
+        .font(.system(size: 11, weight: .regular, design: .monospaced))
+        .foregroundStyle(.white.opacity(0.72))
+        .padding(12)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func metric(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 72, alignment: .leading)
+            Text(value)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func formatted(_ value: Float) -> String {
+        String(format: "%.3f", value)
+    }
+}
+#endif
 
 private enum CeremonySheet: String, Identifiable {
     case preparation

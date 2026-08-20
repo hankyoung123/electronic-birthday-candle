@@ -1,9 +1,12 @@
-@preconcurrency import AVFoundation
+import AVFoundation
 import Foundation
 
-enum AudioEngineError: Error {
+enum AudioEngineError: Error, Equatable, Sendable {
     case microphonePermissionDenied
     case microphoneUnavailable
+    case sessionActivationFailed
+    case interruptionRecoveryFailed
+    case routeRecoveryFailed
 }
 
 private enum AudioConversionError: Error {
@@ -13,9 +16,44 @@ private enum AudioConversionError: Error {
     case conversionFailed
 }
 
+private final class AudioConversionInput: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private let lock = NSLock()
+    private var supplied = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func next(status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.withLock {
+            guard !supplied else {
+                status.pointee = .endOfStream
+                return nil
+            }
+
+            supplied = true
+            status.pointee = .haveData
+            return buffer
+        }
+    }
+}
+
 @MainActor
 final class AudioEngine {
     var onBlowIntensity: (@MainActor @Sendable (Float) -> Void)?
+    var onFailure: (@MainActor @Sendable (AudioEngineError) -> Void)?
+
+    #if DEBUG
+    private(set) var currentInputDescription = "Unavailable"
+    private(set) var currentInputSampleRate: Double = 0
+
+    var currentBlowDebugSnapshot: BlowDebugSnapshot {
+        blowDetector.currentDebugSnapshot
+    }
+
+    var currentMusicVolume: Float { musicPlayer.volume }
+    #endif
 
     private let engine = AVAudioEngine()
     private let musicPlayer = AVAudioPlayerNode()
@@ -23,6 +61,7 @@ final class AudioEngine {
     private let blowDetector: BlowDetector
     private var inputTapInstalled = false
     private var detectionRequested = false
+    private var intensityDeliveryTask: Task<Void, Never>?
     private var musicFadeTask: Task<Void, Never>?
     private var notificationTokens: [NSObjectProtocol] = []
     private var wasMusicPlayingBeforeInterruption = false
@@ -36,18 +75,31 @@ final class AudioEngine {
         observeAudioSession()
     }
 
-    func start() async throws {
-        detectionRequested = true
+    func prepareMicrophoneAccess() async throws {
         guard await requestMicrophonePermission() else {
             throw AudioEngineError.microphonePermissionDenied
         }
+    }
 
-        try configureSession()
-        try installInputTapIfNeeded()
-        if !engine.isRunning {
-            engine.prepare()
-            try engine.start()
+    func start() async throws {
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            throw AudioEngineError.microphonePermissionDenied
         }
+        detectionRequested = true
+
+        do {
+            try configureSession()
+            try installInputTapIfNeeded()
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+        } catch let error as AudioEngineError {
+            throw error
+        } catch {
+            throw AudioEngineError.sessionActivationFailed
+        }
+        startIntensityDelivery()
     }
 
     func stop() {
@@ -62,11 +114,18 @@ final class AudioEngine {
 
     func stopBlowDetection() {
         detectionRequested = false
+        intensityDeliveryTask?.cancel()
+        intensityDeliveryTask = nil
         if inputTapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
         }
         blowDetector.reset()
+    }
+
+    func handleRuntimeFailure(_ error: AudioEngineError) {
+        stop()
+        onFailure?(error)
     }
 
     func play(track: MusicTrack) throws {
@@ -168,17 +227,10 @@ final class AudioEngine {
             throw AudioConversionError.bufferAllocationFailed
         }
 
-        var suppliedInput = false
+        let conversionInput = AudioConversionInput(buffer: sourceBuffer)
         var conversionError: NSError?
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, inputStatus in
-            if suppliedInput {
-                inputStatus.pointee = .endOfStream
-                return nil
-            }
-
-            suppliedInput = true
-            inputStatus.pointee = .haveData
-            return sourceBuffer
+            conversionInput.next(status: inputStatus)
         }
 
         guard
@@ -214,9 +266,52 @@ final class AudioEngine {
         try session.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.defaultToSpeaker, .allowBluetoothHFP]
+            options: [.defaultToSpeaker]
         )
         try session.setActive(true)
+        try preferBuiltInMicrophone(on: session)
+        try session.overrideOutputAudioPort(.speaker)
+        updateCurrentInputDescription(from: session)
+    }
+
+    private func preferBuiltInMicrophone(on session: AVAudioSession) throws {
+        guard let builtInMicrophone = session.availableInputs?.first(where: {
+            $0.portType == .builtInMic
+        }) else {
+            return
+        }
+
+        try session.setPreferredInput(builtInMicrophone)
+
+        let suitableOrientations: Set<AVAudioSession.Orientation> = [.front, .bottom]
+        let selectedSource = builtInMicrophone.selectedDataSource
+        let preferredSource = builtInMicrophone.preferredDataSource
+        let suitableSource = [selectedSource, preferredSource]
+            .compactMap { $0 }
+            .first(where: { source in
+                source.orientation.map(suitableOrientations.contains) ?? false
+            })
+            ?? builtInMicrophone.dataSources?.first(where: { $0.orientation == .front })
+            ?? builtInMicrophone.dataSources?.first(where: { $0.orientation == .bottom })
+
+        if let suitableSource {
+            try builtInMicrophone.setPreferredDataSource(suitableSource)
+        }
+    }
+
+    private func updateCurrentInputDescription(from session: AVAudioSession) {
+        #if DEBUG
+        guard let input = session.currentRoute.inputs.first else {
+            currentInputDescription = "Unavailable"
+            return
+        }
+
+        if let dataSource = input.selectedDataSource {
+            currentInputDescription = "\(input.portName) — \(dataSource.dataSourceName)"
+        } else {
+            currentInputDescription = input.portName
+        }
+        #endif
     }
 
     private func installInputTapIfNeeded() throws {
@@ -226,20 +321,45 @@ final class AudioEngine {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw AudioEngineError.microphoneUnavailable
         }
+        #if DEBUG
+        currentInputSampleRate = format.sampleRate
+        #endif
 
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
+        input.installTap(
+            onBus: 0,
+            bufferSize: 1_024,
+            format: format,
+            block: Self.makeInputTap(
+                detector: blowDetector,
+                sampleRate: format.sampleRate
+            )
+        )
+        inputTapInstalled = true
+    }
+
+    nonisolated private static func makeInputTap(
+        detector: BlowDetector,
+        sampleRate: Double
+    ) -> AVAudioNodeTapBlock {
+        { @Sendable buffer, _ in
             guard
-                let self,
                 let channel = buffer.floatChannelData?.pointee
             else { return }
 
-            let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
-            let intensity = self.blowDetector.analyze(samples: samples, sampleRate: format.sampleRate)
-            Task { @MainActor [weak self] in
-                self?.onBlowIntensity?(intensity)
+            let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+            detector.analyze(samples: samples, sampleRate: sampleRate)
+        }
+    }
+
+    private func startIntensityDelivery() {
+        guard intensityDeliveryTask == nil else { return }
+        intensityDeliveryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                self.onBlowIntensity?(self.blowDetector.currentIntensity)
+                try? await Task.sleep(for: .milliseconds(33))
             }
         }
-        inputTapInstalled = true
     }
 
     private func observeAudioSession() {
@@ -250,8 +370,12 @@ final class AudioEngine {
                 object: nil,
                 queue: .main
             ) { [weak self] notification in
+                guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else {
+                    return
+                }
+                let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 Task { @MainActor [weak self] in
-                    self?.handleInterruption(notification)
+                    self?.handleInterruption(type: type, options: options)
                 }
             }
         )
@@ -261,16 +385,18 @@ final class AudioEngine {
                 object: nil,
                 queue: .main
             ) { [weak self] notification in
+                guard let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else {
+                    return
+                }
                 Task { @MainActor [weak self] in
-                    self?.handleRouteChange(notification)
+                    self?.handleRouteChange(reason: reason)
                 }
             }
         )
     }
 
-    private func handleInterruption(_ notification: Notification) {
+    private func handleInterruption(type rawType: UInt, options rawOptions: UInt) {
         guard
-            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             let type = AVAudioSession.InterruptionType(rawValue: rawType)
         else { return }
 
@@ -281,25 +407,26 @@ final class AudioEngine {
             effectPlayer.pause()
             engine.pause()
         case .ended:
-            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
-            guard options.contains(.shouldResume) else { return }
+            guard options.contains(.shouldResume) else {
+                handleRuntimeFailure(.interruptionRecoveryFailed)
+                return
+            }
             do {
                 try configureSession()
                 try installInputTapIfNeeded()
                 try engine.start()
                 if wasMusicPlayingBeforeInterruption { musicPlayer.play() }
             } catch {
-                stop()
+                handleRuntimeFailure(.interruptionRecoveryFailed)
             }
         @unknown default:
             break
         }
     }
 
-    private func handleRouteChange(_ notification: Notification) {
+    private func handleRouteChange(reason rawReason: UInt) {
         guard
-            let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
             let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason),
             reason == .oldDeviceUnavailable || reason == .newDeviceAvailable
         else { return }
@@ -317,7 +444,7 @@ final class AudioEngine {
             try engine.start()
             if shouldResumeMusic { musicPlayer.play() }
         } catch {
-            stop()
+            handleRuntimeFailure(.routeRecoveryFailed)
         }
     }
 }

@@ -21,19 +21,26 @@ struct FlameView: View {
 
     private func render(in context: inout GraphicsContext, size: CGSize, time: TimeInterval) {
         let wind = CGFloat(blowIntensity.clamped(to: 0...1))
-        let natural = reduceMotion ? 0 : sin(time * 7.1) * 0.045 + sin(time * 13.7) * 0.025
-        let struggle = reduceMotion ? 0 : sin(time * (19 + wind * 19)) * (0.025 + wind * 0.095)
-        let flicker = natural + struggle
+        let drift = reduceMotion ? 0 : smoothNoise(at: time * 1.15, seed: 0.37) * 0.052
+        let flutter = reduceMotion ? 0 : smoothNoise(at: time * 5.4, seed: 1.91) * 0.032
+        let shimmer = reduceMotion ? 0 : smoothNoise(at: time * 12.7, seed: 4.63) * 0.014
+        let struggle = reduceMotion
+            ? 0
+            : smoothNoise(at: time * (6.2 + Double(wind) * 9.8), seed: 8.17)
+                * (0.018 + wind * 0.105)
+        let flicker = drift + flutter + shimmer + struggle
         let lightingScale: CGFloat = phase == .lighting ? 0.72 : 1
         let height = size.height * (0.78 - wind * 0.27 + flicker) * lightingScale
-        let width = size.width * (0.29 - wind * 0.075 + abs(natural) * 0.12) * lightingScale
-        let bend = size.width * (wind * 0.38 + natural * 0.32)
+        let width = size.width
+            * (0.29 - wind * 0.075 + abs(drift) * 0.12 + flutter * 0.035)
+            * lightingScale
+        let bend = size.width * (wind * 0.38 + drift * 0.42 + flutter * 0.12)
         let baseY = size.height * 0.93
         let centerX = size.width * 0.5
 
         context.drawLayer { glow in
             glow.addFilter(.blur(radius: 21 + wind * 7))
-            glow.opacity = 0.32 - Double(wind) * 0.08
+            glow.opacity = 0.32 - Double(wind) * 0.08 + Double(shimmer) * 1.2
             let glowRect = CGRect(
                 x: centerX - width * 1.15 + bend * 0.25,
                 y: baseY - height * 0.95,
@@ -93,6 +100,20 @@ struct FlameView: View {
             Path(ellipseIn: coreRect),
             with: .color(Color(red: 0.76, green: 0.93, blue: 1, opacity: 0.78))
         )
+    }
+
+    private func smoothNoise(at position: Double, seed: Double) -> CGFloat {
+        let lower = floor(position)
+        let fraction = position - lower
+        let eased = fraction * fraction * (3 - 2 * fraction)
+        let start = noiseValue(at: lower, seed: seed)
+        let end = noiseValue(at: lower + 1, seed: seed)
+        return CGFloat(start + (end - start) * eased)
+    }
+
+    private func noiseValue(at position: Double, seed: Double) -> Double {
+        let value = sin(position * 12.9898 + seed * 78.233) * 43_758.5453
+        return (value - floor(value)) * 2 - 1
     }
 
     private func flamePath(

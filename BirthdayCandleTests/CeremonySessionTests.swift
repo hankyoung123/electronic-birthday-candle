@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class CeremonySessionTests: XCTestCase {
+    func testEmberAppearsOnlyAfterExtinguishingCompletes() {
+        XCTAssertFalse(CeremonyPhase.extinguishing.showsEmber)
+        XCTAssertTrue(CeremonyPhase.extinguished.showsEmber)
+    }
+
+    func testPreparationWithoutAudioEngineCanProceed() async {
+        let session = CeremonySession()
+
+        let isReady = await session.prepareMicrophoneAccess()
+
+        XCTAssertTrue(isReady)
+        XCTAssertEqual(session.phase, .ready)
+    }
+
+    func testRuntimeAudioFailuresReturnLightingCeremonyToReady() {
+        for error in [
+            AudioEngineError.routeRecoveryFailed,
+            .microphoneUnavailable,
+            .sessionActivationFailed,
+        ] {
+            let audioEngine = AudioEngine()
+            let session = CeremonySession(audioEngine: audioEngine)
+            session.lightCandle()
+
+            audioEngine.handleRuntimeFailure(error)
+
+            XCTAssertEqual(session.phase, .ready)
+            XCTAssertEqual(session.notice, .microphoneUnavailable)
+            XCTAssertEqual(session.blowIntensity, 0)
+        }
+    }
+
     func testReadyCanBeginLighting() {
         let session = CeremonySession()
 
@@ -55,5 +87,20 @@ final class CeremonySessionTests: XCTestCase {
         session.receiveBlowIntensity(0.9, at: 1.5)
 
         XCTAssertEqual(session.phase, .extinguishing)
+    }
+
+    func testExtinguishingCompletesInsideCollapseWindow() async {
+        XCTAssertTrue((0.15...0.25).contains(CeremonyTiming.extinguishingDuration))
+
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        session.extinguish()
+        XCTAssertEqual(session.phase, .extinguishing)
+
+        try? await Task.sleep(for: .milliseconds(260))
+        XCTAssertEqual(session.phase, .extinguished)
+        XCTAssertNotNil(session.extinguishedAt)
     }
 }

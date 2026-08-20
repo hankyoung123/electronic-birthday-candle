@@ -1,3 +1,7 @@
+enum CeremonyTiming {
+    static let extinguishingDuration = 0.18
+}
+
 enum CeremonyPhase: String, CaseIterable, Sendable {
     case ready
     case lighting
@@ -17,7 +21,7 @@ enum CeremonyPhase: String, CaseIterable, Sendable {
     }
 
     var showsEmber: Bool {
-        self == .extinguishing || self == .extinguished
+        self == .extinguished
     }
 
     var showsSmoke: Bool {

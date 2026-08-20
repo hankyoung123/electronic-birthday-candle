@@ -47,6 +47,22 @@ final class CeremonySession {
         audioEngine?.onBlowIntensity = { [weak self] intensity in
             self?.receiveBlowIntensity(intensity)
         }
+        audioEngine?.onFailure = { [weak self] error in
+            self?.handleAudioFailure(error)
+        }
+    }
+
+    func prepareMicrophoneAccess() async -> Bool {
+        guard let audioEngine else { return true }
+        do {
+            try await audioEngine.prepareMicrophoneAccess()
+            return true
+        } catch let error as AudioEngineError {
+            handleAudioFailure(error)
+        } catch {
+            handleAudioFailure(.microphoneUnavailable)
+        }
+        return false
     }
 
     func lightCandle() {
@@ -86,7 +102,7 @@ final class CeremonySession {
         transition(to: .extinguishing)
         hapticEngine?.extinguish()
         ceremonyTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(180))
+            try? await Task.sleep(for: .seconds(CeremonyTiming.extinguishingDuration))
             guard !Task.isCancelled, let self, self.phase == .extinguishing else { return }
             self.extinguishedAt = Date()
             self.transition(to: .extinguished)
@@ -116,7 +132,6 @@ final class CeremonySession {
             return
         }
         blowIntensity = min(max(intensity, 0), 1)
-        hapticEngine?.wind(intensity: blowIntensity)
 
         let elapsed = lastBlowSampleTime.map { min(max(time - $0, 0), 0.1) } ?? 0
         lastBlowSampleTime = time
@@ -153,20 +168,48 @@ final class CeremonySession {
     }
 
     private func handleAudioFailure(_ error: AudioEngineError) {
+        ceremonyTask?.cancel()
         audioEngine?.stop()
         blowIntensity = 0
+        strongBlowDuration = 0
+        lastBlowSampleTime = nil
         transition(to: .ready)
         switch error {
         case .microphonePermissionDenied:
             notice = .microphonePermissionDenied
-        case .microphoneUnavailable:
+        case .microphoneUnavailable,
+             .sessionActivationFailed,
+             .interruptionRecoveryFailed,
+             .routeRecoveryFailed:
             notice = .microphoneUnavailable
         }
     }
 
     #if DEBUG
-    func setDevelopmentBlowIntensity(_ intensity: Float) {
-        blowIntensity = min(max(intensity, 0), 1)
+    var debugInputDescription: String {
+        audioEngine?.currentInputDescription ?? "Unavailable"
+    }
+
+    var debugInputSampleRate: Double {
+        audioEngine?.currentInputSampleRate ?? 0
+    }
+
+    var debugBlowSnapshot: BlowDebugSnapshot {
+        audioEngine?.currentBlowDebugSnapshot ?? .zero
+    }
+
+    var debugStrongBlowDuration: TimeInterval { strongBlowDuration }
+
+    var debugRequiredStrongBlowDuration: TimeInterval {
+        blowConfiguration.requiredStrongBlowDuration
+    }
+
+    var debugMusicVolume: Float {
+        audioEngine?.currentMusicVolume ?? 0
+    }
+
+    func setDebugMusicVolume(_ volume: Float) {
+        audioEngine?.setMusicVolume(volume)
     }
     #endif
 }
