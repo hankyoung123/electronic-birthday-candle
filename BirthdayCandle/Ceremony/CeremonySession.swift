@@ -138,8 +138,15 @@ final class CeremonySession {
 
         if blowIntensity >= blowConfiguration.strongBlowThreshold {
             strongBlowDuration += elapsed
+        } else if blowIntensity >= blowConfiguration.strongBlowMaintainThreshold {
+            // Short dips during a real blow should not erase already-earned
+            // progress. Keep the accumulator alive while the user is still
+            // blowing meaningfully.
         } else {
-            strongBlowDuration = max(0, strongBlowDuration - elapsed * 1.8)
+            strongBlowDuration = max(
+                0,
+                strongBlowDuration - elapsed * blowConfiguration.strongBlowDecayRate
+            )
         }
 
         if strongBlowDuration >= blowConfiguration.requiredStrongBlowDuration {
@@ -199,6 +206,14 @@ final class CeremonySession {
     }
 
     var debugStrongBlowDuration: TimeInterval { strongBlowDuration }
+
+    var debugStrongBlowStartThreshold: Float {
+        blowConfiguration.strongBlowThreshold
+    }
+
+    var debugStrongBlowMaintainThreshold: Float {
+        blowConfiguration.strongBlowMaintainThreshold
+    }
 
     var debugRequiredStrongBlowDuration: TimeInterval {
         blowConfiguration.requiredStrongBlowDuration

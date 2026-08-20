@@ -118,6 +118,8 @@ private struct BlowInspector: View {
             metric("Texture", formatted(snapshot.texture))
             metric("Raw", formatted(snapshot.rawScore))
             metric("Smoothed", formatted(snapshot.smoothedIntensity))
+            metric("Start", formatted(session.debugStrongBlowStartThreshold))
+            metric("Maintain", formatted(session.debugStrongBlowMaintainThreshold))
 
             HStack(spacing: 8) {
                 Text("Blow")

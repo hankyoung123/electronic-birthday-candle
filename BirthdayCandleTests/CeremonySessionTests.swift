@@ -89,6 +89,26 @@ final class CeremonySessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .extinguishing)
     }
 
+    func testFluctuatingBlowSurvivesShortDipsAboveMaintain() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        // Strong blow with realistic short dips: the energy dips below the
+        // start threshold, but remains above the maintain threshold and should
+        // not erase the progress already earned.
+        session.receiveBlowIntensity(0.9, at: 1)
+        session.receiveBlowIntensity(0.5, at: 1.1)
+        session.receiveBlowIntensity(0.85, at: 1.2)
+        session.receiveBlowIntensity(0.45, at: 1.3)
+        session.receiveBlowIntensity(0.9, at: 1.4)
+        session.receiveBlowIntensity(0.9, at: 1.5)
+        session.receiveBlowIntensity(0.9, at: 1.6)
+        session.receiveBlowIntensity(0.9, at: 1.7)
+
+        XCTAssertEqual(session.phase, .extinguishing)
+    }
+
     func testExtinguishingCompletesInsideCollapseWindow() async {
         XCTAssertTrue((0.15...0.25).contains(CeremonyTiming.extinguishingDuration))
 

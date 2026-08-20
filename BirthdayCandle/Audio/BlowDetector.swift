@@ -62,7 +62,12 @@ final class BlowDetector: @unchecked Sendable {
             lower: configuration.minimumHighFrequencyRatio,
             upper: configuration.fullHighFrequencyRatio
         )
-        let rawScore = energyScore * textureScore
+        // Energy is primary; texture only nudges the score.
+        // This prevents real breath noise with less high-frequency content
+        // from being multiplied down to zero.
+        let textureInfluence = configuration.textureBaseline
+            + configuration.textureWeight * textureScore
+        let rawScore = energyScore * min(textureInfluence, 1)
 
         return lock.withLock {
             let coefficient = rawScore > smoothedIntensity

@@ -51,6 +51,15 @@ final class BlowDetectorTests: XCTestCase {
         XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
+    func testFluctuatingWindStillProducesHighStableIntensity() {
+        let detector = BlowDetector()
+        let wind = fluctuatingWind(peakAmplitude: 0.26)
+
+        let result = analyzeRepeatedly(wind, detector: detector, count: 18)
+
+        XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
+    }
+
     func testWindIntensityIsStableAcrossCommonSampleRates() {
         let wind44 = deterministicNoise(amplitude: 0.11)
         let wind48 = deterministicNoise(amplitude: 0.11)
@@ -176,6 +185,15 @@ final class BlowDetectorTests: XCTestCase {
             state = state &* 6_364_136_223_846_793_005 &+ 1
             let unit = Float((state >> 40) & 0xFFFF) / Float(0xFFFF)
             return (unit * 2 - 1) * amplitude
+        }
+    }
+
+    private func fluctuatingWind(peakAmplitude: Float) -> [Float] {
+        let noise = deterministicNoise(amplitude: 1)
+        return noise.enumerated().map { index, sample in
+            let progress = Double(index) / Double(frameCount)
+            let envelope = Float(0.35 + 0.65 * abs(sin(2 * Double.pi * 2.3 * progress)))
+            return sample * envelope * peakAmplitude
         }
     }
 }

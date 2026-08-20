@@ -283,19 +283,13 @@ final class AudioEngine {
 
         try session.setPreferredInput(builtInMicrophone)
 
-        let suitableOrientations: Set<AVAudioSession.Orientation> = [.front, .bottom]
-        let selectedSource = builtInMicrophone.selectedDataSource
-        let preferredSource = builtInMicrophone.preferredDataSource
-        let suitableSource = [selectedSource, preferredSource]
-            .compactMap { $0 }
-            .first(where: { source in
-                source.orientation.map(suitableOrientations.contains) ?? false
-            })
-            ?? builtInMicrophone.dataSources?.first(where: { $0.orientation == .front })
-            ?? builtInMicrophone.dataSources?.first(where: { $0.orientation == .bottom })
-
-        if let suitableSource {
-            try builtInMicrophone.setPreferredDataSource(suitableSource)
+        // Prefer the front-facing built-in microphone when available. It is
+        // usually the best pick for blowing at the phone screen, and avoids
+        // letting the system fall back to a bottom or Bluetooth microphone.
+        if let frontSource = builtInMicrophone.dataSources?.first(where: {
+            $0.orientation == .front
+        }) {
+            try builtInMicrophone.setPreferredDataSource(frontSource)
         }
     }
 
