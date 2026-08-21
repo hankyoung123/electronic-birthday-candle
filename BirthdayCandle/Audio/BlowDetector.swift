@@ -2,66 +2,92 @@ import Accelerate
 import Foundation
 
 #if DEBUG
-/// Full-frame diagnostics for the Inspector. Band values are *ratios* (sum to
-/// one); raw powers stay internal to the detector.
+/// Full-frame diagnostics for the Inspector, following the adaptive-baseline
+/// delta pipeline: current/baseline level, band ratios, band dB deltas,
+/// broadband + its delta, and the three score stages.
 struct BlowDebugSnapshot: Sendable {
     let rms: Float
     let dbFS: Float
+    let baselineDbFS: Float
+    let totalDeltaDB: Float
     let lowRatio: Float
     let midRatio: Float
     let upperRatio: Float
     let highRatio: Float
+    let lowDeltaDB: Float
+    let midDeltaDB: Float
+    let upperDeltaDB: Float
+    let highDeltaDB: Float
     let broadbandActiveProportion: Float
     let broadbandScore: Float
-    let energyScore: Float
+    let broadbandDelta: Float
+    let spectralDeltaScore: Float
     let rawScore: Float
     let smoothedIntensity: Float
-    let flatness: Float
 
     static let zero = BlowDebugSnapshot(
         rms: 0,
         dbFS: -120,
+        baselineDbFS: -120,
+        totalDeltaDB: 0,
         lowRatio: 0,
         midRatio: 0,
         upperRatio: 0,
         highRatio: 0,
+        lowDeltaDB: 0,
+        midDeltaDB: 0,
+        upperDeltaDB: 0,
+        highDeltaDB: 0,
         broadbandActiveProportion: 0,
         broadbandScore: 0,
-        energyScore: 0,
+        broadbandDelta: 0,
+        spectralDeltaScore: 0,
         rawScore: 0,
-        smoothedIntensity: 0,
-        flatness: 0
+        smoothedIntensity: 0
     )
 }
 #endif
 
-/// Core per-frame band analysis (also used in Release — it IS the detector).
-/// Band energies are the raw mean-per-bin powers; ratios are the comparable,
-/// loudness-independent view used by the Inspector.
+/// Per-frame band measurements (also used in Release — they ARE the detector
+/// input). Powers are mean-per-bin; ratios are the comparable 0–1 view.
 private struct BandAnalysis {
-    let lowEnergy: Float
-    let midEnergy: Float
-    let upperEnergy: Float
-    let highEnergy: Float
+    let totalPower: Float
+    let lowPower: Float
+    let midPower: Float
+    let upperPower: Float
+    let highPower: Float
     let lowRatio: Float
     let midRatio: Float
     let upperRatio: Float
     let highRatio: Float
     let broadbandActiveProportion: Float
     let broadbandScore: Float
-    let flatness: Float
+}
+
+/// Ambient-spectrum state: updated by slow EMA, fast during warm-up, frozen
+/// while a blow candidate is active.
+private struct BaselineState {
+    var totalPower: Float = 0
+    var lowPower: Float = 0
+    var midPower: Float = 0
+    var upperPower: Float = 0
+    var highPower: Float = 0
+    var broadbandScore: Float = 0
+    var rms: Float = 0
 }
 
 final class BlowDetector: @unchecked Sendable {
     private let configuration: BlowDetectionConfiguration
     private let lock = NSLock()
     private var smoothedIntensity: Float = 0
+    private var baseline = BaselineState()
+    private var hasBaseline = false
+    private var elapsedAtAnalysis: Double = 0
     #if DEBUG
     private var debugSnapshot: BlowDebugSnapshot = .zero
     #endif
 
-    // Reused FFT scratch. The FFT now runs on every frame in every build
-    // because band energy + broadband are the primary detection features.
+    // Reused FFT scratch.
     private let spectrumFFTSize = 1_024
     private var fftSetup: FFTSetup?
     private var spectrumInterleaved: [Float] = []
@@ -69,6 +95,8 @@ final class BlowDetector: @unchecked Sendable {
     private var spectrumImag: [Float] = []
     private var spectrumPower: [Float] = []
     private var spectrumWindow: [Float] = []
+    /// Floor used to keep `10 * log10((cur+ε)/(base+ε))` finite at silence.
+    private let deltaEpsilon: Float = 1e-8
 
     init(configuration: BlowDetectionConfiguration = .standard) {
         self.configuration = configuration
@@ -88,45 +116,98 @@ final class BlowDetector: @unchecked Sendable {
             sumSquares += sample * sample
         }
         let rms = sqrt(sumSquares / Float(samples.count))
+        let bands = analyzeBands(samples, sampleRate: sampleRate, rms: rms, config: config)
 
-        let analysis = analyzeBands(samples, sampleRate: sampleRate, rms: rms, config: config)
+        let frameDuration = Double(samples.count) / sampleRate
+        elapsedAtAnalysis += frameDuration
+        let warmingUp = elapsedAtAnalysis < config.baselineWarmupDuration
 
-        let energyScore = normalized(
-            rms,
-            lower: config.silenceFloorRMS,
-            upper: config.fullScaleRMS
-        )
-        let broadbandScore = analysis.broadbandScore
-        // Additive mix over the two most reliable cues: loud enough, and
-        // broad across 80–2000 Hz. Band ratios are diagnostics only.
-        let rawScore = min(
-            max(
-                config.energyScoreWeight * energyScore
-                    + config.broadbandScoreWeight * broadbandScore,
-                0
-            ),
-            1
-        )
+        // Deltas vs the ambient baseline (zero until the first frame seeds it).
+        var totalDeltaDB: Float = 0
+        var lowDeltaDB: Float = 0
+        var midDeltaDB: Float = 0
+        var upperDeltaDB: Float = 0
+        var highDeltaDB: Float = 0
+        var broadbandDelta: Float = 0
+        var spectralDeltaScore: Float = 0
+        var rawScore: Float = 0
+
+        if hasBaseline {
+            totalDeltaDB = deltaDB(bands.totalPower, baseline.totalPower)
+            lowDeltaDB = deltaDB(bands.lowPower, baseline.lowPower)
+            midDeltaDB = deltaDB(bands.midPower, baseline.midPower)
+            upperDeltaDB = deltaDB(bands.upperPower, baseline.upperPower)
+            highDeltaDB = deltaDB(bands.highPower, baseline.highPower)
+            broadbandDelta = bands.broadbandScore - baseline.broadbandScore
+
+            let lowScore = normalized(lowDeltaDB, lower: config.lowDeltaStartDB, upper: config.lowDeltaFullDB)
+            let midScore = normalized(midDeltaDB, lower: config.midDeltaStartDB, upper: config.midDeltaFullDB)
+            let upperScore = normalized(upperDeltaDB, lower: config.upperDeltaStartDB, upper: config.upperDeltaFullDB)
+
+            // Low/mid/upper only — the high band is diagnostics for now.
+            spectralDeltaScore = config.lowWeight * lowScore
+                + config.midWeight * midScore
+                + config.upperWeight * upperScore
+            let spectralWeight = 1 - config.broadbandWeight
+            // Additive; no hard gating between the two terms.
+            rawScore = min(
+                max(spectralWeight * spectralDeltaScore + config.broadbandWeight * bands.broadbandScore, 0),
+                1
+            )
+        }
 
         return lock.withLock {
             let coefficient = rawScore > smoothedIntensity
                 ? config.attackSmoothing
                 : config.releaseSmoothing
             smoothedIntensity += (rawScore - smoothedIntensity) * coefficient
+
+            if !hasBaseline {
+                // First frame establishes the ambient; nothing to measure yet.
+                baseline = BaselineState(
+                    totalPower: bands.totalPower,
+                    lowPower: bands.lowPower,
+                    midPower: bands.midPower,
+                    upperPower: bands.upperPower,
+                    highPower: bands.highPower,
+                    broadbandScore: bands.broadbandScore,
+                    rms: rms
+                )
+                hasBaseline = true
+            } else if smoothedIntensity <= config.candidateFreezeThreshold {
+                // Not blowing: keep adapting (fast at start, slow afterwards).
+                let alpha = Float(warmingUp ? config.baselineWarmupAlpha : config.baselineAlpha)
+                baseline.totalPower += (bands.totalPower - baseline.totalPower) * alpha
+                baseline.lowPower += (bands.lowPower - baseline.lowPower) * alpha
+                baseline.midPower += (bands.midPower - baseline.midPower) * alpha
+                baseline.upperPower += (bands.upperPower - baseline.upperPower) * alpha
+                baseline.highPower += (bands.highPower - baseline.highPower) * alpha
+                baseline.broadbandScore += (bands.broadbandScore - baseline.broadbandScore) * alpha
+                baseline.rms += (rms - baseline.rms) * alpha
+            }
+            // else: a blow candidate is active — baseline is frozen so a
+            // sustained blow never gets absorbed into the ambient.
+
             #if DEBUG
             debugSnapshot = BlowDebugSnapshot(
                 rms: rms,
                 dbFS: rms > 0 ? max(-120, 20 * log10(rms)) : -120,
-                lowRatio: analysis.lowRatio,
-                midRatio: analysis.midRatio,
-                upperRatio: analysis.upperRatio,
-                highRatio: analysis.highRatio,
-                broadbandActiveProportion: analysis.broadbandActiveProportion,
-                broadbandScore: broadbandScore,
-                energyScore: energyScore,
+                baselineDbFS: baseline.rms > 0 ? max(-120, 20 * log10(baseline.rms)) : -120,
+                totalDeltaDB: totalDeltaDB,
+                lowRatio: bands.lowRatio,
+                midRatio: bands.midRatio,
+                upperRatio: bands.upperRatio,
+                highRatio: bands.highRatio,
+                lowDeltaDB: lowDeltaDB,
+                midDeltaDB: midDeltaDB,
+                upperDeltaDB: upperDeltaDB,
+                highDeltaDB: highDeltaDB,
+                broadbandActiveProportion: bands.broadbandActiveProportion,
+                broadbandScore: bands.broadbandScore,
+                broadbandDelta: broadbandDelta,
+                spectralDeltaScore: spectralDeltaScore,
                 rawScore: rawScore,
-                smoothedIntensity: smoothedIntensity,
-                flatness: analysis.flatness
+                smoothedIntensity: smoothedIntensity
             )
             #endif
             return smoothedIntensity
@@ -146,10 +227,17 @@ final class BlowDetector: @unchecked Sendable {
     func reset() {
         lock.withLock {
             smoothedIntensity = 0
+            baseline = BaselineState()
+            hasBaseline = false
+            elapsedAtAnalysis = 0
             #if DEBUG
             debugSnapshot = .zero
             #endif
         }
+    }
+
+    private func deltaDB(_ current: Float, _ base: Float) -> Float {
+        10 * log10((current + deltaEpsilon) / (base + deltaEpsilon))
     }
 
     private func normalized(_ value: Float, lower: Float, upper: Float) -> Float {
@@ -169,18 +257,15 @@ final class BlowDetector: @unchecked Sendable {
         ensureFFTScratch(fftSize: n)
         guard let setup = fftSetup else {
             return BandAnalysis(
-                lowEnergy: 0, midEnergy: 0, upperEnergy: 0, highEnergy: 0,
+                totalPower: 0, lowPower: 0, midPower: 0, upperPower: 0, highPower: 0,
                 lowRatio: 0, midRatio: 0, upperRatio: 0, highRatio: 0,
-                broadbandActiveProportion: 0, broadbandScore: 0, flatness: 0
+                broadbandActiveProportion: 0, broadbandScore: 0
             )
         }
 
         let count = min(samples.count, n)
         let log2n = vDSP_Length(log2(Double(n)))
 
-        // The interleaved buffer viewed as (real, imag) complex pairs matches
-        // exactly the even/odd packing vDSP_fft_zrip expects for a forward
-        // transform of a real signal.
         let window = spectrumWindow
         spectrumInterleaved.withUnsafeMutableBufferPointer { inter in
             for i in 0..<count {
@@ -234,51 +319,35 @@ final class BlowDetector: @unchecked Sendable {
             return sum / Float(end - start)
         }
 
-        let lowEnergy = meanPower(lowStart, lowEnd)
-        let midEnergy = meanPower(lowEnd, midEnd)
-        let upperEnergy = meanPower(midEnd, upperEnd)
-        let highEnergy = meanPower(upperEnd, highEnd)
+        let lowPower = meanPower(lowStart, lowEnd)
+        let midPower = meanPower(lowEnd, midEnd)
+        let upperPower = meanPower(midEnd, upperEnd)
+        let highPower = meanPower(upperEnd, highEnd)
 
-        // Loudness-independent, comparable view: each band's share of total
-        // band power. A 1e-12 epsilon keeps ratios stable at silence.
-        let totalPower = lowEnergy + midEnergy + upperEnergy + highEnergy + 1e-12
-        let lowRatio = lowEnergy / totalPower
-        let midRatio = midEnergy / totalPower
-        let upperRatio = upperEnergy / totalPower
-        let highRatio = highEnergy / totalPower
+        // Comparable view: each band's share of total band power.
+        let totalPower = lowPower + midPower + upperPower + highPower + 1e-12
+        let lowRatio = lowPower / totalPower
+        let midRatio = midPower / totalPower
+        let upperRatio = upperPower / totalPower
+        let highRatio = highPower / totalPower
 
         // Broadband: how much of [broadbandLower, broadbandUpper) rose at once.
         let bbStart = bandLower(config.broadbandLowerHz)
         let bbEnd = bandUpper(config.broadbandUpperHz)
         var activeProportion: Float = 0
         var broadbandScore: Float = 0
-        var flatness: Float = 0
         if bbEnd > bbStart {
             var maxPower: Float = 0
-            var powerSum: Float = 0
             power.withUnsafeBufferPointer { p in
                 guard let base = p.baseAddress else { return }
-                let length = vDSP_Length(bbEnd - bbStart)
-                vDSP_maxv(base + bbStart, 1, &maxPower, length)
-                vDSP_sve(base + bbStart, 1, &powerSum, length)
+                vDSP_maxv(base + bbStart, 1, &maxPower, vDSP_Length(bbEnd - bbStart))
             }
-            let bandCount = bbEnd - bbStart
-            let arithmeticMean = powerSum / Float(bandCount)
-
-            var logSum: Float = 0
-            var activeCount = 0
-            for k in bbStart..<bbEnd {
-                let pk = max(power[k], 1e-12)
-                logSum += log(pk)
-                if power[k] >= maxPower * config.broadbandRelativeThreshold {
+            if maxPower > 1e-9, rms >= config.silenceFloorRMS {
+                var activeCount = 0
+                for k in bbStart..<bbEnd where power[k] >= maxPower * config.broadbandRelativeThreshold {
                     activeCount += 1
                 }
-            }
-            let geometricMean = exp(logSum / Float(bandCount))
-            flatness = arithmeticMean > 0 ? geometricMean / arithmeticMean : 0
-
-            if maxPower > 1e-9, rms >= config.silenceFloorRMS {
-                let proportion = Float(activeCount) / Float(bandCount)
+                let proportion = Float(activeCount) / Float(bbEnd - bbStart)
                 activeProportion = proportion
                 broadbandScore = normalized(
                     proportion,
@@ -289,17 +358,17 @@ final class BlowDetector: @unchecked Sendable {
         }
 
         return BandAnalysis(
-            lowEnergy: lowEnergy,
-            midEnergy: midEnergy,
-            upperEnergy: upperEnergy,
-            highEnergy: highEnergy,
+            totalPower: totalPower,
+            lowPower: lowPower,
+            midPower: midPower,
+            upperPower: upperPower,
+            highPower: highPower,
             lowRatio: lowRatio,
             midRatio: midRatio,
             upperRatio: upperRatio,
             highRatio: highRatio,
             broadbandActiveProportion: activeProportion,
-            broadbandScore: broadbandScore,
-            flatness: flatness
+            broadbandScore: broadbandScore
         )
     }
 

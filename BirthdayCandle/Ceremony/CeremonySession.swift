@@ -28,46 +28,34 @@ struct TimedSpectrum: Sendable {
 }
 
 /// Rolling window statistics (average + peak) for the Inspector's “Copy 3s
-/// Avg”. `dbFS` is in dB; every other value is 0–1 normalized.
+/// Avg”. `dbFS`/`baselineDbFS` are in dB; every other value is 0–1 normalized.
 struct SpectrumRollingSummary: Sendable {
     let sampleCount: Int
     let dbFSAverage: Float
     let dbFSPeak: Float
-    let lowRatioAverage: Float
-    let lowRatioPeak: Float
-    let midRatioAverage: Float
-    let midRatioPeak: Float
-    let upperRatioAverage: Float
-    let upperRatioPeak: Float
-    let highRatioAverage: Float
-    let highRatioPeak: Float
-    let energyScoreAverage: Float
-    let energyScorePeak: Float
+    let baselineDbFSAverage: Float
+    let totalDeltaDBAverage: Float
+    let totalDeltaDBPeak: Float
     let broadbandAverage: Float
     let broadbandPeak: Float
-    let blowScoreAverage: Float
-    let blowScorePeak: Float
-    let flatnessAverage: Float
+    let rawAverage: Float
+    let rawPeak: Float
+    let smoothedAverage: Float
+    let smoothedPeak: Float
 
     static let empty = SpectrumRollingSummary(
         sampleCount: 0,
         dbFSAverage: -120,
         dbFSPeak: -120,
-        lowRatioAverage: 0,
-        lowRatioPeak: 0,
-        midRatioAverage: 0,
-        midRatioPeak: 0,
-        upperRatioAverage: 0,
-        upperRatioPeak: 0,
-        highRatioAverage: 0,
-        highRatioPeak: 0,
-        energyScoreAverage: 0,
-        energyScorePeak: 0,
+        baselineDbFSAverage: -120,
+        totalDeltaDBAverage: 0,
+        totalDeltaDBPeak: 0,
         broadbandAverage: 0,
         broadbandPeak: 0,
-        blowScoreAverage: 0,
-        blowScorePeak: 0,
-        flatnessAverage: 0
+        rawAverage: 0,
+        rawPeak: 0,
+        smoothedAverage: 0,
+        smoothedPeak: 0
     )
 }
 #endif
@@ -284,21 +272,15 @@ final class CeremonySession {
         var count = 0
         var rmsSquaredSum: Float = 0
         var dbPeak: Float = -120
-        var lowSum: Float = 0
-        var lowPeak: Float = 0
-        var midSum: Float = 0
-        var midPeak: Float = 0
-        var upperSum: Float = 0
-        var upperPeak: Float = 0
-        var highSum: Float = 0
-        var highPeak: Float = 0
-        var energySum: Float = 0
-        var energyPeak: Float = 0
+        var baselineDbSum: Float = 0
+        var totalDeltaSum: Float = 0
+        var totalDeltaPeak: Float = 0
         var broadbandSum: Float = 0
         var broadbandPeak: Float = 0
-        var blowSum: Float = 0
-        var blowPeak: Float = 0
-        var flatSum: Float = 0
+        var rawSum: Float = 0
+        var rawPeak: Float = 0
+        var smoothedSum: Float = 0
+        var smoothedPeak: Float = 0
 
         for entry in spectrumHistory {
             count += 1
@@ -307,21 +289,15 @@ final class CeremonySession {
             // averaging dBFS directly would bias toward the quietest frames.
             rmsSquaredSum += snapshot.rms * snapshot.rms
             dbPeak = max(dbPeak, snapshot.dbFS)
-            lowSum += snapshot.lowRatio
-            lowPeak = max(lowPeak, snapshot.lowRatio)
-            midSum += snapshot.midRatio
-            midPeak = max(midPeak, snapshot.midRatio)
-            upperSum += snapshot.upperRatio
-            upperPeak = max(upperPeak, snapshot.upperRatio)
-            highSum += snapshot.highRatio
-            highPeak = max(highPeak, snapshot.highRatio)
-            energySum += snapshot.energyScore
-            energyPeak = max(energyPeak, snapshot.energyScore)
+            baselineDbSum += snapshot.baselineDbFS
+            totalDeltaSum += snapshot.totalDeltaDB
+            totalDeltaPeak = max(totalDeltaPeak, snapshot.totalDeltaDB)
             broadbandSum += snapshot.broadbandScore
             broadbandPeak = max(broadbandPeak, snapshot.broadbandScore)
-            blowSum += entry.blowScore
-            blowPeak = max(blowPeak, entry.blowScore)
-            flatSum += snapshot.flatness
+            rawSum += snapshot.rawScore
+            rawPeak = max(rawPeak, snapshot.rawScore)
+            smoothedSum += entry.blowScore
+            smoothedPeak = max(smoothedPeak, entry.blowScore)
         }
 
         let total = Float(count)
@@ -331,21 +307,15 @@ final class CeremonySession {
             sampleCount: count,
             dbFSAverage: meanDbFS,
             dbFSPeak: dbPeak,
-            lowRatioAverage: lowSum / total,
-            lowRatioPeak: lowPeak,
-            midRatioAverage: midSum / total,
-            midRatioPeak: midPeak,
-            upperRatioAverage: upperSum / total,
-            upperRatioPeak: upperPeak,
-            highRatioAverage: highSum / total,
-            highRatioPeak: highPeak,
-            energyScoreAverage: energySum / total,
-            energyScorePeak: energyPeak,
+            baselineDbFSAverage: baselineDbSum / total,
+            totalDeltaDBAverage: totalDeltaSum / total,
+            totalDeltaDBPeak: totalDeltaPeak,
             broadbandAverage: broadbandSum / total,
             broadbandPeak: broadbandPeak,
-            blowScoreAverage: blowSum / total,
-            blowScorePeak: blowPeak,
-            flatnessAverage: flatSum / total
+            rawAverage: rawSum / total,
+            rawPeak: rawPeak,
+            smoothedAverage: smoothedSum / total,
+            smoothedPeak: smoothedPeak
         )
     }
 
@@ -384,12 +354,48 @@ final class CeremonySession {
         blowConfiguration.strongBlowDecayRate
     }
 
-    var debugEnergyScoreWeight: Float {
-        blowConfiguration.energyScoreWeight
+    var debugBaselineAlpha: Double {
+        blowConfiguration.baselineAlpha
     }
 
-    var debugBroadbandScoreWeight: Float {
-        blowConfiguration.broadbandScoreWeight
+    var debugLowDeltaStartDB: Float {
+        blowConfiguration.lowDeltaStartDB
+    }
+
+    var debugLowDeltaFullDB: Float {
+        blowConfiguration.lowDeltaFullDB
+    }
+
+    var debugMidDeltaStartDB: Float {
+        blowConfiguration.midDeltaStartDB
+    }
+
+    var debugMidDeltaFullDB: Float {
+        blowConfiguration.midDeltaFullDB
+    }
+
+    var debugUpperDeltaStartDB: Float {
+        blowConfiguration.upperDeltaStartDB
+    }
+
+    var debugUpperDeltaFullDB: Float {
+        blowConfiguration.upperDeltaFullDB
+    }
+
+    var debugLowWeight: Float {
+        blowConfiguration.lowWeight
+    }
+
+    var debugMidWeight: Float {
+        blowConfiguration.midWeight
+    }
+
+    var debugUpperWeight: Float {
+        blowConfiguration.upperWeight
+    }
+
+    var debugBroadbandWeight: Float {
+        blowConfiguration.broadbandWeight
     }
 
     var debugBroadbandRelativeThreshold: Float {
@@ -424,12 +430,48 @@ final class CeremonySession {
         blowConfiguration.strongBlowDecayRate = max(value, 0)
     }
 
-    func setDebugEnergyScoreWeight(_ value: Float) {
-        blowConfiguration.energyScoreWeight = min(max(value, 0), 1)
+    func setDebugBaselineAlpha(_ value: Double) {
+        blowConfiguration.baselineAlpha = min(max(value, 0), 0.5)
     }
 
-    func setDebugBroadbandScoreWeight(_ value: Float) {
-        blowConfiguration.broadbandScoreWeight = min(max(value, 0), 1)
+    func setDebugLowDeltaStartDB(_ value: Float) {
+        blowConfiguration.lowDeltaStartDB = max(value, 0)
+    }
+
+    func setDebugLowDeltaFullDB(_ value: Float) {
+        blowConfiguration.lowDeltaFullDB = max(value, 0)
+    }
+
+    func setDebugMidDeltaStartDB(_ value: Float) {
+        blowConfiguration.midDeltaStartDB = max(value, 0)
+    }
+
+    func setDebugMidDeltaFullDB(_ value: Float) {
+        blowConfiguration.midDeltaFullDB = max(value, 0)
+    }
+
+    func setDebugUpperDeltaStartDB(_ value: Float) {
+        blowConfiguration.upperDeltaStartDB = max(value, 0)
+    }
+
+    func setDebugUpperDeltaFullDB(_ value: Float) {
+        blowConfiguration.upperDeltaFullDB = max(value, 0)
+    }
+
+    func setDebugLowWeight(_ value: Float) {
+        blowConfiguration.lowWeight = min(max(value, 0), 1)
+    }
+
+    func setDebugMidWeight(_ value: Float) {
+        blowConfiguration.midWeight = min(max(value, 0), 1)
+    }
+
+    func setDebugUpperWeight(_ value: Float) {
+        blowConfiguration.upperWeight = min(max(value, 0), 1)
+    }
+
+    func setDebugBroadbandWeight(_ value: Float) {
+        blowConfiguration.broadbandWeight = min(max(value, 0), 1)
     }
 
     func setDebugBroadbandRelativeThreshold(_ value: Float) {

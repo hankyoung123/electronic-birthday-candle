@@ -1,135 +1,109 @@
-# 真机吹气校准手册（宽带中低频 · 最小模型）
+# 真机吹气校准手册（自适应基线 · 频谱增量）
 
 > 目标：用 Debug Panel 的实时数据，把 `BlowDetectionConfiguration.standard` 的最终参数在
 > 真机上定下来。本手册只针对真机（Debug 构建），Release 不包含可调入口。
 
-## 0. 当前检测模型（本轮）
+## 0. 当前检测模型（Adaptive Blow Detection）
 
-核心原则：**先把频谱数据做对，再用最简单、偏宽松的频谱模型识别吹气，不堆算法参数。**
-
-```text
-Blow Score = Energy Score × 0.65   # 声音够强（RMS 归一化响度）
-           + Broadband Score × 0.35 # 80–2000 Hz 是否“整片抬升”（宽带形状）
-
-Broadband Score = 80–2000 Hz 内 power ≥ 带内峰值 × 25% 的 bin 占比
-                  映射 0.25→0.70 归一化
-```
-
-- 四频段 `Low 80–300 / Mid 300–800 / Up 800–2k / High 2k–5k` 只做**观察**：
-  原始 mean power 仅内部使用，UI 与导出显示**占比（Ratio，和 ≈ 1）**。
-- 频段不参与最终判定（未硬塞权重，不堆参数）。
-- 仍是**加法模型**，绝不用 `energy × texture` 硬乘门槛。
-
-> **权重为何是 0.65 / 0.35（偏离最初建议的 0.40 / 0.60）**：
-> 实测发现宽带“形状”指标与响度无关——极轻的白色底噪（≈ -31 dBFS）会拿到与真吹气
-> 几乎相同的 Broadband（≈0.9）。若按 0.40/0.60，安静房间的空调/风扇噪声也会把蜡烛吹灭，
-> 违反验收。因此能量项必须承担“够不够响”的分量：响度低（quiet 噪声）不触发、
-> 嘴巴贴麦的响吹通过、讲话/音乐靠宽带项（≈0）排除。真机数据到位后，
-> 用 `Energy Wt / Broadband Wt` 滑杆向纯宽带方向回调即可。
-
-默认判定参数（保持不动）：
+核心：**检测的是“比环境高了多少 dB”的频谱变化，而不是绝对响度。**
 
 ```text
-Start=0.45  Maintain=0.25  Duration=0.40s  Decay=0.40
+Spectrum (Low/Mid/Upper/High + Broadband)
+  → Adaptive Baseline（环境频谱，慢 EMA，疑似吹气时冻结）
+  → Delta Features（dB 增量）
+  → Spectral Delta Score
+  → rawScore → smoothed → CeremonySession 时间确认后熄灭
 ```
 
-## 1. Debug Panel 怎么看
+```text
+deltaDB(band) = 10 * log10((currentPower + ε) / (baselinePower + ε))
 
-| 指标 | 含义 | 校准用途 |
-| --- | --- | --- |
-| Input Route | 当前麦克风（确认 iPhone 前置内置） | 确认前置麦克风 |
-| Sample Rate | 输入采样率（44100 / 48000 Hz） | 归一化正常 |
-| RMS / dBFS | 能量绝对值（dBFS = 20·log10(RMS)） | 响度分界 |
-| Low / Mid / Up / High | 频段能量占比（%） | 看吹气能量落在哪（观察） |
-| Broadband Act | 80–2000 Hz 活跃 bin 占比（%） | Broadband 的原始输入 |
-| Broadband Score | 归一化后的宽带分 0–1 | 加法模型第 2 项 |
-| Energy Score | RMS 归一化响度 0–1 | 加法模型第 1 项 |
-| Raw Score | 两项加权原始分 0–1 | 判断用输入 |
-| Smoothed | 平滑后最终分（驱动火焰） | 与阈值对比 |
-| Spectral Flatness | 显示用，**不参与判定** | 下一阶段特征对照 |
-| Start / Maintain / Required Duration / Strong | 判定阈值 + 已累计时长 | 观察累计与衰减 |
+lowScore   = normalize(lowDeltaDB,   1.5, 8.0)
+midScore   = normalize(midDeltaDB,   1.5, 8.0)
+upperScore = normalize(upperDeltaDB, 1.0, 7.0)
 
-**Live Tuning** 滑杆（实时生效，无需重编译）：
+spectralDeltaScore = lowScore ×0.40 + midScore×0.35 + upperScore×0.15
+rawScore = spectralDeltaScore × 0.85 + broadbandScore × 0.15
+```
 
-- `Start` / `Maintain` / `Duration` / `Decay`（熄灭判定）
-- `Energy Wt` / `Broadband Wt`（加法模型两项权重）
-- `BB Relative` / `BB Min Active` / `BB Full Active`（宽带判定三参数）
+- **High 段（2000–5000 Hz）只显示不参与评分**；无硬乘法门槛；无固定峰值频率；
+  不再以绝对 RMS 作为主要判定（RMS/dBFS 仅 Debug）。
+- Baseline：第一帧以当前环境建立（点蜡烛时环境已在），前 0.6s 快速 EMA（α=0.25），
+  此后慢 EMA（α=0.02）；**当 smoothed > 0.20（疑似吹气）时基线冻结**，
+  持续吹气不会被吸进环境基线。
 
-**Copy Values**：复制 9 个调参值；**Copy Snapshot**：复制一帧；**Copy 3s Avg**：最近 3 秒
-平均值 + 峰值（dB 用线性功率平均后转 dB；峰值超过 3 秒自动消失）。
+熄灭判定（`CeremonySession` 不变）：
 
-## 2. 测试矩阵（每项录 Copy Snapshot + 3s Avg）
+```text
+Start=0.40  Maintain=0.20  Duration=0.40s  Decay=0.40
+```
 
-| 场景 | 期望 | 关键观察 |
-| --- | --- | --- |
-| 安静 3s | Smoothed < 0.2 | 底噪、Broadband Act 是否误高 |
-| 正常讲话 3s | Smoothed < Start，Strong 不涨 | 讲话峰值、Broadband |
-| 大声讲话 / 喊 3s | Smoothed 尽量 < Start | 大声时 Broadband 是否仍低 |
-| 拍手 3 次 | 不误触发 | 拍手瞬间 Energy/Broadband |
-| 生日音乐 3s（音量 40–70%） | 不自行触发 | 音乐 Energy/Broadband |
-| 轻吹 3s（8–15cm） | Smoothed 明显上升、火焰有反馈 | 轻吹 Smoothed、Broadband |
-| 正常持续吹 0.4–1s | 稳定熄灭 | 吹气谷值（要高于 Maintain） |
-| 强吹 | 更早熄灭，不卡住 | 峰值、累计速度 |
-| 音乐 + 吹气 | 仍能熄灭 | 抗干扰余量（见下方注意） |
+## 1. Debug Panel
 
-> **注意（音乐+吹气）**：当前宽带模型用“带内峰值”做参考，单个很响的谐波峰值
-> 可能压低 Broadband（纯音乐本身不会误触发，但“吹着唱/放歌吹”需要真机验证）。
-> 真机上嘴贴近麦克风、音乐从扬声器且已压低，通常吹气会主导输入；若不够，
-> 用 `BB Relative`（调高）或 `Broadband Wt`（调高）收紧/加强宽带条件。
+| 指标 | 含义 |
+| --- | --- |
+| Input Route / Sample Rate | 前置麦克风 / 采样率 |
+| Current dBFS / Baseline dBFS | 当前响度 / 环境响度 |
+| Total ΔdB | 总带功率相对环境的增量 |
+| Low/Mid/Up/High | 频段占比 % + 各自 ΔdB |
+| Broadband Act | 80–2000 Hz 活跃 bin 占比 |
+| Broadband / Broadband Δ | 宽带形状分 / 相对环境的形状增量 |
+| Spectral Δ Score / Raw / Smoothed | 三级打分 |
+| Strong Duration | 已累计 / 所需时长 |
 
-## 3. 定参规则（对照数据，不是猜）
+**Live Tuning**（实时生效）：
 
-1. **Start**：取“讲话/音乐/拍手”场景 Smoothed 的最高峰值，加 0.08–0.12 余量。
-2. **Maintain**：取“正常持续吹”过程中 Smoothed 最低谷值减 0.05，仍高于“大声讲话”稳态。
-3. **Duration**：0.35–0.5s；**Decay**：初始 0.4。
-4. **Energy Wt / Broadband Wt**（默认 0.65/0.35）：
-   - 讲话/音乐误触发 → 升 `broadbandWt`、降 `energyWt`（宽带成为硬条件）。
-   - 轻吹 Smoothed 太低 → 升 `energyWt`。
-   - 安静底噪误触发 → **降 `broadbandWt`**（宽带形状对轻白噪天然≈满格）。
-5. **BB Relative / Min / Full**（默认 0.25 / 0.25 / 0.70）：
-   - 吹气 Broadband 偏低（>2kHz 衰减太明显）→ 降 `relative`（更宽松，但注意会放大轻白噪）。
-   - 讲话/音乐 Broadband 误高 → 升 `relative` 或升 `min active`。
-6. **RMS 标定**：若讲话 Energy Score 经常到 1 → 升 `fullScaleRMS`（0.15–0.2）；
-   若轻吹 Energy Score 太低 → 降 `fullScaleRMS`。
+- `Baseline α`：基线慢 EMA 系数（默认 0.02）
+- `Low/Mid/Up Δ Start / Full`：各段 dB 归一化上下限（默认 1.5/8.0, 1.5/8.0, 1.0/7.0）
+- `Low/Mid/Up Wt`：谱段权重（默认 0.40/0.35/0.15）
+- `Broadband Wt`：宽带确认权重（默认 0.15；剩余权重归 spectral）
+- `Start / Maintain / Duration / Decay`：熄灭判定
 
-## 4. 固化步骤（最终）
+**Copy Values** 复制 15 个调参键；**Copy Snapshot** 一帧；**Copy 3s Avg** 3 秒均值+峰值。
 
-1. 用 **Copy Values** 拿到：
+## 2. 已用合成信号锁定的行为（回归测试）
 
-   ```text
-   start=0.45
-   maintain=0.25
-   duration=0.40
-   decay=0.40
-   energyWt=0.65
-   broadbandWt=0.35
-   bbRelative=0.25
-   bbMinActive=0.25
-   bbFullActive=0.70
-   ```
+| 场景 | 结果 |
+| --- | --- |
+| 稳定音乐 60 帧 | baseline 吸收 → 0.00 ✓ |
+| 稳定白噪声 60 帧 | 吸收 → ~0.09 ✓（旧绝对模型会误触发） |
+| 稳定谐波人声 60 帧 | 吸收 → 0.00 ✓ |
+| 安静后吹气 | Δ 高 → 0.59 触发 ✓ |
+| 音乐上吹气 | Δ 高 → 0.56 触发 ✓（旧模型此处失效） |
+| 持续吹 60 帧 | 冻结 → 不被吸收 0.80 ✓ |
+| 音量微调 (+2.5dB) | 瞬态后回落，不误触发 ✓ |
+| 环境小幅变化 | baseline 重新收敛 ✓ |
 
-2. 写回 `BirthdayCandle/Audio/BlowDetectionConfiguration.swift` 默认值（含 RMS 标定）。
-3. 连测 3 轮验收矩阵。
-4. Release 构建自动不含 Inspector 与可调入口（全部 `#if DEBUG`）。
+## 3. 真机定参规则（对照数据）
 
-## 5. 验收标准
+1. **Δ Start / Full**：决定“多响的变化算吹气”。
+   - 真机轻吹 ΔdB（各段）偏低 → 调低 start 或调高灵敏度。
+   - 讲话/音乐峰值 ΔdB 误触发 → 调高 start（如 low 2.5、mid 2.5、up 2.0）。
+2. **Low/Mid/Up Wt**：真吹气若偏低频 → 升 lowWt；偏中频 → 升 midWt。
+3. **Broadband Wt**：误触发多 → 升（宽带成为更强确认）；真吹不识别 → 降。
+4. **Baseline α**：环境变化快/背景音乐呼吸感强 → 适当调高（更快跟环境）；
+   稳定房间 → 保持 0.02。**数值高会让慢速吹气被部分吸收**，注意权衡。
+5. **Start/Maintain/Duration/Decay**：保持默认，按真机误触发情况微调。
 
-- [ ] 轻吹（8–15cm，不必对准麦克风）：Smoothed 明显上升、火焰明显摆动。
-- [ ] 正常持续吹 0.4–1s：稳定熄灭，3 轮一致。
-- [ ] 正常讲话：不轻易熄灭（Strong 基本不涨）。
-- [ ] 生日音乐：不自行触发。
-- [ ] 3s 历史 N≈90 且不随运行时长增长；旧峰值 3 秒后消失。
+## 4. 已知边界（真机重点验证）
 
-## 6. 真机数据回填对比
+- **大幅环境台阶**（例如点蜡烛后突然放很大声的背景音乐，或手动把音量 +6dB 以上）
+  会被当作“疑似吹气”而冻结 baseline，首个 0.4s 若 Δ 足够大会触发。
+  **规避**：应用流程是"检测开始前音乐已就绪、检测后只做淡入淡出"，已避开此场景；
+  若真机遇到，用 `Baseline α`/`Start` 上调规避，或用 `Broadband Wt` 强化宽带确认。
+- 单一很响的谐波峰值可压低 Broadband（最大相对参考），但 Δ 评分仍能工作。
 
-| 场景 | dBFS | Low% | Mid% | Up% | High% | Broadband Act | Broadband | Energy | Final |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 安静 | | | | | | | | | |
-| 正常讲话 | | | | | | | | | |
-| 大声讲话 | | | | | | | | | |
-| 拍手 | | | | | | | | | |
-| 轻吹 | | | | | | | | | |
-| 正常持续吹 | | | | | | | | | |
-| 强吹 | | | | | | | | | |
-| 生日音乐 | | | | | | | | | |
-| 音乐 + 吹气 | | | | | | | | | |
+## 5. 真机验收（§12）
+
+- [ ] 持续播放音乐 10s：不熄灭。
+- [ ] 正常讲话：不轻易熄灭。
+- [ ] 正常吹气：火焰立即响应。
+- [ ] 持续吹 0.4–1s：稳定熄灭，3 轮一致。
+- [ ] 音乐 + 吹气：可可靠熄灭。
+- [ ] 停止吹气后：基线恢复更新（Debug 看 Baseline dBFS / Total ΔdB 回到环境水平）。
+
+## 6. 固化步骤
+
+1. 用 **Copy Values** 拿到 15 键，把非默认值写回
+   `BirthdayCandle/Audio/BlowDetectionConfiguration.swift` 对应私有默认值。
+2. 连测 3 轮。Release 自动不含 Inspector 与可调入口。

@@ -124,10 +124,9 @@ private struct BlowInspector: View {
 
                 metric("Input Route", session.debugInputDescription)
                 metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
-                metric(
-                    "RMS / dBFS",
-                    "\(formatted(snapshot.rms)) / \(String(format: "%.1f dB", snapshot.dbFS))"
-                )
+                metric("Current dBFS", String(format: "%.1f dB", snapshot.dbFS))
+                metric("Baseline dBFS", String(format: "%.1f dB", snapshot.baselineDbFS))
+                metric("Total ΔdB", String(format: "%+.1f", snapshot.totalDeltaDB))
 
                 HStack {
                     Text("Spectrum")
@@ -138,25 +137,22 @@ private struct BlowInspector: View {
                     copyButton("Copy 3s Avg", copiedLabel: "3s Avg ✓", text: rollingText)
                 }
 
-                ratioRow("Low 80–300", ratio: snapshot.lowRatio)
-                ratioRow("Mid 300–800", ratio: snapshot.midRatio)
-                ratioRow("Up 800–2k", ratio: snapshot.upperRatio)
-                ratioRow("High 2k–5k", ratio: snapshot.highRatio)
+                ratioRow("Low 80–300", ratio: snapshot.lowRatio, deltaDB: snapshot.lowDeltaDB)
+                ratioRow("Mid 300–800", ratio: snapshot.midRatio, deltaDB: snapshot.midDeltaDB)
+                ratioRow("Up 800–2k", ratio: snapshot.upperRatio, deltaDB: snapshot.upperDeltaDB)
+                ratioRow("High 2k–5k", ratio: snapshot.highRatio, deltaDB: snapshot.highDeltaDB)
 
                 progressRow(
                     "Broadband Act",
                     value: Double(snapshot.broadbandActiveProportion),
                     detail: "\(Int((snapshot.broadbandActiveProportion * 100).rounded()))%"
                 )
-                metric("Broadband Score", formatted(snapshot.broadbandScore))
-                metric("Energy Score", formatted(snapshot.energyScore))
+                metric("Broadband", formatted(snapshot.broadbandScore))
+                metric("Broadband Δ", String(format: "%+.2f", snapshot.broadbandDelta))
+                metric("Spectral Δ Score", formatted(snapshot.spectralDeltaScore))
                 metric("Raw Score", formatted(snapshot.rawScore))
                 progressRow("Smoothed", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
-                metric("Spectral Flatness", String(format: "%.2f", snapshot.flatness))
 
-                metric("Start", formatted(session.debugStrongBlowStartThreshold))
-                metric("Maintain", formatted(session.debugStrongBlowMaintainThreshold))
-                metric("Required Duration", String(format: "%.2f s", session.debugRequiredStrongBlowDuration))
                 progressRow(
                     "Strong",
                     value: Double(
@@ -178,6 +174,116 @@ private struct BlowInspector: View {
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.orange.opacity(0.9))
 
+                sliderRow(
+                    "Baseline α",
+                    value: Binding(
+                        get: { session.debugBaselineAlpha },
+                        set: { session.setDebugBaselineAlpha($0) }
+                    ),
+                    in: 0.005...0.5,
+                    step: 0.005,
+                    format: "%.3f"
+                )
+                sliderRow(
+                    "Low Δ Start",
+                    value: Binding(
+                        get: { Double(session.debugLowDeltaStartDB) },
+                        set: { session.setDebugLowDeltaStartDB(Float($0)) }
+                    ),
+                    in: 0...12,
+                    step: 0.5,
+                    format: "%.1f"
+                )
+                sliderRow(
+                    "Low Δ Full",
+                    value: Binding(
+                        get: { Double(session.debugLowDeltaFullDB) },
+                        set: { session.setDebugLowDeltaFullDB(Float($0)) }
+                    ),
+                    in: 0...12,
+                    step: 0.5,
+                    format: "%.1f"
+                )
+                sliderRow(
+                    "Mid Δ Start",
+                    value: Binding(
+                        get: { Double(session.debugMidDeltaStartDB) },
+                        set: { session.setDebugMidDeltaStartDB(Float($0)) }
+                    ),
+                    in: 0...12,
+                    step: 0.5,
+                    format: "%.1f"
+                )
+                sliderRow(
+                    "Mid Δ Full",
+                    value: Binding(
+                        get: { Double(session.debugMidDeltaFullDB) },
+                        set: { session.setDebugMidDeltaFullDB(Float($0)) }
+                    ),
+                    in: 0...12,
+                    step: 0.5,
+                    format: "%.1f"
+                )
+                sliderRow(
+                    "Up Δ Start",
+                    value: Binding(
+                        get: { Double(session.debugUpperDeltaStartDB) },
+                        set: { session.setDebugUpperDeltaStartDB(Float($0)) }
+                    ),
+                    in: 0...12,
+                    step: 0.5,
+                    format: "%.1f"
+                )
+                sliderRow(
+                    "Up Δ Full",
+                    value: Binding(
+                        get: { Double(session.debugUpperDeltaFullDB) },
+                        set: { session.setDebugUpperDeltaFullDB(Float($0)) }
+                    ),
+                    in: 0...12,
+                    step: 0.5,
+                    format: "%.1f"
+                )
+                sliderRow(
+                    "Low Wt",
+                    value: Binding(
+                        get: { Double(session.debugLowWeight) },
+                        set: { session.setDebugLowWeight(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "Mid Wt",
+                    value: Binding(
+                        get: { Double(session.debugMidWeight) },
+                        set: { session.setDebugMidWeight(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "Up Wt",
+                    value: Binding(
+                        get: { Double(session.debugUpperWeight) },
+                        set: { session.setDebugUpperWeight(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "Broadband Wt",
+                    value: Binding(
+                        get: { Double(session.debugBroadbandWeight) },
+                        set: { session.setDebugBroadbandWeight(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
                 sliderRow(
                     "Start",
                     value: Binding(
@@ -215,56 +321,6 @@ private struct BlowInspector: View {
                         set: { session.setDebugStrongBlowDecayRate($0) }
                     ),
                     in: 0...2,
-                    step: 0.05,
-                    format: "%.2f"
-                )
-                sliderRow(
-                    "Energy Wt",
-                    value: Binding(
-                        get: { Double(session.debugEnergyScoreWeight) },
-                        set: { session.setDebugEnergyScoreWeight(Float($0)) }
-                    ),
-                    in: 0...1,
-                    step: 0.05,
-                    format: "%.2f"
-                )
-                sliderRow(
-                    "Broadband Wt",
-                    value: Binding(
-                        get: { Double(session.debugBroadbandScoreWeight) },
-                        set: { session.setDebugBroadbandScoreWeight(Float($0)) }
-                    ),
-                    in: 0...1,
-                    step: 0.05,
-                    format: "%.2f"
-                )
-                sliderRow(
-                    "BB Relative",
-                    value: Binding(
-                        get: { Double(session.debugBroadbandRelativeThreshold) },
-                        set: { session.setDebugBroadbandRelativeThreshold(Float($0)) }
-                    ),
-                    in: 0.02...0.5,
-                    step: 0.02,
-                    format: "%.2f"
-                )
-                sliderRow(
-                    "BB Min Active",
-                    value: Binding(
-                        get: { Double(session.debugBroadbandActiveMinProportion) },
-                        set: { session.setDebugBroadbandActiveMinProportion(Float($0)) }
-                    ),
-                    in: 0...1,
-                    step: 0.05,
-                    format: "%.2f"
-                )
-                sliderRow(
-                    "BB Full Active",
-                    value: Binding(
-                        get: { Double(session.debugBroadbandActiveFullProportion) },
-                        set: { session.setDebugBroadbandActiveFullProportion(Float($0)) }
-                    ),
-                    in: 0...1,
                     step: 0.05,
                     format: "%.2f"
                 )
@@ -312,16 +368,22 @@ private struct BlowInspector: View {
 
     private var copyText: String {
         String(
-            format: "start=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f\nenergyWt=%.2f\nbroadbandWt=%.2f\nbbRelative=%.2f\nbbMinActive=%.2f\nbbFullActive=%.2f",
+            format: "baselineAlpha=%.3f\nlowStart=%.1f\nlowFull=%.1f\nmidStart=%.1f\nmidFull=%.1f\nupperStart=%.1f\nupperFull=%.1f\nlowWt=%.2f\nmidWt=%.2f\nupperWt=%.2f\nbroadbandWt=%.2f\nstart=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f",
+            session.debugBaselineAlpha,
+            session.debugLowDeltaStartDB,
+            session.debugLowDeltaFullDB,
+            session.debugMidDeltaStartDB,
+            session.debugMidDeltaFullDB,
+            session.debugUpperDeltaStartDB,
+            session.debugUpperDeltaFullDB,
+            session.debugLowWeight,
+            session.debugMidWeight,
+            session.debugUpperWeight,
+            session.debugBroadbandWeight,
             session.debugStrongBlowStartThreshold,
             session.debugStrongBlowMaintainThreshold,
             session.debugRequiredStrongBlowDuration,
-            session.debugStrongBlowDecayRate,
-            session.debugEnergyScoreWeight,
-            session.debugBroadbandScoreWeight,
-            session.debugBroadbandRelativeThreshold,
-            session.debugBroadbandActiveMinProportion,
-            session.debugBroadbandActiveFullProportion
+            session.debugStrongBlowDecayRate
         )
     }
 
@@ -343,22 +405,23 @@ private struct BlowInspector: View {
     private var snapshotText: String {
         let s = session.debugBlowSnapshot
         func pct(_ value: Float) -> String { String(format: "%d%%", Int((value * 100).rounded())) }
+        func dB(_ value: Float) -> String { String(format: "%+.1f", value) }
         return """
         Input: \(session.debugInputDescription)
         SampleRate: \(Int(session.debugInputSampleRate.rounded()))
-        dBFS: \(String(format: "%.1f", s.dbFS))
+        Current dBFS: \(String(format: "%.1f", s.dbFS))
+        Baseline dBFS: \(String(format: "%.1f", s.baselineDbFS))
+        Total Delta: \(dB(s.totalDeltaDB))
 
-        Low:  \(pct(s.lowRatio))
-        Mid:  \(pct(s.midRatio))
-        Up:   \(pct(s.upperRatio))
-        High: \(pct(s.highRatio))
+        Low:  \(pct(s.lowRatio)) / \(dB(s.lowDeltaDB))
+        Mid:  \(pct(s.midRatio)) / \(dB(s.midDeltaDB))
+        Up:   \(pct(s.upperRatio)) / \(dB(s.upperDeltaDB))
+        High: \(pct(s.highRatio)) / \(dB(s.highDeltaDB))
 
-        BB Active: \(pct(s.broadbandActiveProportion))
-        Broadband: \(String(format: "%.2f", s.broadbandScore))
-        Energy:    \(String(format: "%.2f", s.energyScore))
-        Raw:       \(String(format: "%.2f", s.rawScore))
-        Smoothed:  \(String(format: "%.2f", s.smoothedIntensity))
-        Flatness:  \(String(format: "%.2f", s.flatness))
+        Broadband: \(String(format: "%.2f", s.broadbandScore)) / \(String(format: "%+.2f", s.broadbandDelta))
+        Spectral: \(String(format: "%.2f", s.spectralDeltaScore))
+        Raw:      \(String(format: "%.2f", s.rawScore))
+        Smoothed: \(String(format: "%.2f", s.smoothedIntensity))
         """
     }
 
@@ -368,25 +431,25 @@ private struct BlowInspector: View {
             return "No samples yet — blow detection must be active for ~3s."
         }
         func f(_ value: Float) -> String { String(format: "%.2f", value) }
-        func p(_ value: Float) -> String { String(format: "%.0f%%", value * 100) }
         return """
         -- 3s Avg (N=\(s.sampleCount)) --
         dBFS:  \(f(s.dbFSAverage)) (peak \(f(s.dbFSPeak)))
-        Energy: \(f(s.energyScoreAverage)) (peak \(f(s.energyScorePeak)))
-        Broadband: \(p(s.broadbandAverage)) (peak \(p(s.broadbandPeak)))
-        Final:  \(f(s.blowScoreAverage)) (peak \(f(s.blowScorePeak)))
-        Bands(avg): Low \(p(s.lowRatioAverage)) Mid \(p(s.midRatioAverage)) Up \(p(s.upperRatioAverage)) High \(p(s.highRatioAverage))
+        Baseline dBFS: \(f(s.baselineDbFSAverage))
+        Total ΔdB: \(f(s.totalDeltaDBAverage)) (peak \(f(s.totalDeltaDBPeak)))
+        Broadband: \(f(s.broadbandAverage)) (peak \(f(s.broadbandPeak)))
+        Raw: \(f(s.rawAverage)) (peak \(f(s.rawPeak)))
+        Smoothed: \(f(s.smoothedAverage)) (peak \(f(s.smoothedPeak)))
         """
     }
 
-    private func ratioRow(_ label: String, ratio: Float) -> some View {
+    private func ratioRow(_ label: String, ratio: Float, deltaDB: Float) -> some View {
         HStack(spacing: 8) {
             Text(label)
                 .frame(width: 104, alignment: .leading)
             ProgressView(value: Double(ratio), total: 1)
                 .tint(.orange.opacity(0.85))
-            Text("\(Int((ratio * 100).rounded()))%")
-                .frame(width: 64, alignment: .trailing)
+            Text("\(Int((ratio * 100).rounded()))% \(String(format: "%+.1f", deltaDB))")
+                .frame(width: 104, alignment: .trailing)
         }
     }
 

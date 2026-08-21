@@ -193,17 +193,17 @@ final class CeremonySessionTests: XCTestCase {
 
         // Loud (but sub-start) phase for ~1 s at 20 Hz.
         for index in 0..<20 {
-            session.receiveBlowIntensity(0.42, at: 1.0 + Double(index) * 0.05)
+            session.receiveBlowIntensity(0.38, at: 1.0 + Double(index) * 0.05)
         }
         // While the loud frames are still inside the window, the peak shows it.
-        XCTAssertGreaterThanOrEqual(session.debugSpectrumRollingSummary.blowScorePeak, 0.40)
+        XCTAssertGreaterThanOrEqual(session.debugSpectrumRollingSummary.smoothedPeak, 0.36)
 
         // Quiet for well over 3 s — the old peak must fall out of the window.
         for index in 0..<70 {
             session.receiveBlowIntensity(0.05, at: 2.0 + Double(index) * 0.05)
         }
         let summary = session.debugSpectrumRollingSummary
-        XCTAssertLessThan(summary.blowScorePeak, 0.10)
+        XCTAssertLessThan(summary.smoothedPeak, 0.10)
         XCTAssertLessThanOrEqual(summary.sampleCount, 100)
     }
 

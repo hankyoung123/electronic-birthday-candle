@@ -9,24 +9,44 @@ import Foundation
 /// In Release builds nothing mutates the shared `.standard` instance, so the
 /// values behave as constants.
 ///
-/// Detection model: the final score is additive over two reliable cues —
+/// Detection model (this round — adaptive spectral delta):
 ///
-///     Blow Score = Energy Score × energyScoreWeight        (is it loud?)
-///                + Broadband Score × broadbandScoreWeight  (is 80–2000 Hz wide?)
+///     spectrum → adaptive baseline → dB deltas → spectral delta score
+///               → raw score → temporal confirmation (CeremonySession)
 ///
-/// The four analysis bands (80–300 / 300–800 / 800–2000 / 2000–5000 Hz) are
-/// computed every frame but exposed as *ratios* for diagnostics only — they do
-/// not feed the decision. No hard energy × texture product gate.
+/// The baseline tracks the *ambient* spectrum (including background music /
+/// noise) so detection measures how much the input rose ABOVE the environment,
+/// not how loud it is in absolute terms. Scoring uses only the low/mid/upper
+/// band deltas plus a small broadband confirmation; the high band and absolute
+/// RMS are diagnostics only. Single production path, additive, no ML, no AEC.
 final class BlowDetectionConfiguration: @unchecked Sendable {
     private let lock = NSLock()
 
-    // Loudness normalization for the Energy Score.
-    private var _silenceFloorRMS: Float = 0.012
-    private var _fullScaleRMS: Float = 0.12
+    // Baseline (ambient spectrum) adaptation.
+    /// EMA coefficient once the baseline is established.
+    private var _baselineAlpha: Double = 0.02
+    /// Faster EMA used during the initial warm-up window.
+    private var _baselineWarmupAlpha: Double = 0.25
+    /// Length of the initial fast-adaptation window after the detector starts.
+    private var _baselineWarmupDuration: TimeInterval = 0.6
+    /// Above this smoothed score the baseline freezes so a sustained blow never
+    /// gets absorbed into the ambient.
+    private var _candidateFreezeThreshold: Float = 0.20
 
-    // Attack / release smoothing of the final score.
-    private var _attackSmoothing: Float = 0.28
-    private var _releaseSmoothing: Float = 0.10
+    // dB-delta scoring bounds (normalize(deltaDB, startDB, fullDB)).
+    private var _lowDeltaStartDB: Float = 1.5
+    private var _lowDeltaFullDB: Float = 8.0
+    private var _midDeltaStartDB: Float = 1.5
+    private var _midDeltaFullDB: Float = 8.0
+    private var _upperDeltaStartDB: Float = 1.0
+    private var _upperDeltaFullDB: Float = 7.0
+
+    // Weights. spectralDeltaScore = low*lowWt + mid*midWt + upper*upperWt.
+    // rawScore = spectralDeltaScore * (1 - broadbandWt) + broadbandScore * broadbandWt.
+    private var _lowWeight: Float = 0.40
+    private var _midWeight: Float = 0.35
+    private var _upperWeight: Float = 0.15
+    private var _broadbandWeight: Float = 0.15
 
     // Band edges (Hz). Analysis bands: [80,300) [300,800) [800,2000) [2000,5000).
     private var _lowBandLowerHz: Double = 80
@@ -36,12 +56,6 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
     private var _highBandUpperHz: Double = 5_000
 
     // Broadband band edges (Hz) and active-bin criteria.
-    //
-    // Relaxed enough that a real blow's decaying high end (peak ~200–500 Hz,
-    // tapering toward 2 kHz) still counts as broad — but not so relaxed that
-    // quiet white-ish room noise saturates the broadband score. Measured on
-    // synthetic speech/music/noise/wind, these values keep silence, speech and
-    // music below start while real blows pass. All three are live-tunable.
     private var _broadbandLowerHz: Double = 80
     private var _broadbandUpperHz: Double = 2_000
     /// A bin counts as “active” when it holds at least this fraction of the
@@ -52,38 +66,88 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
     /// Proportion of active bins at/above which Broadband Score is one.
     private var _broadbandActiveFullProportion: Float = 0.70
 
-    // Additive final-score mix (no hard energy × texture gate).
-    // The broadband term is a *shape* confirmation (rejects tonal speech/music);
-    // energy is what separates a loud blow from quiet broadband room noise.
-    private var _energyScoreWeight: Float = 0.65
-    private var _broadbandScoreWeight: Float = 0.35
+    // Silence handling / smoothing.
+    /// Below this RMS the broadband term is disabled (and silence stays clean).
+    private var _silenceFloorRMS: Float = 0.012
+    private var _attackSmoothing: Float = 0.28
+    private var _releaseSmoothing: Float = 0.10
 
     // Strong-blow accumulator (CeremonySession).
-    private var _strongBlowThreshold: Float = 0.45
-    private var _strongBlowMaintainThreshold: Float = 0.25
+    private var _strongBlowThreshold: Float = 0.40
+    private var _strongBlowMaintainThreshold: Float = 0.20
     private var _strongBlowDecayRate: Double = 0.4
     private var _requiredStrongBlowDuration: TimeInterval = 0.4
 
     init() {}
 
-    var silenceFloorRMS: Float {
-        get { lock.withLock { _silenceFloorRMS } }
-        set { lock.withLock { _silenceFloorRMS = newValue } }
+    var baselineAlpha: Double {
+        get { lock.withLock { _baselineAlpha } }
+        set { lock.withLock { _baselineAlpha = newValue } }
     }
 
-    var fullScaleRMS: Float {
-        get { lock.withLock { _fullScaleRMS } }
-        set { lock.withLock { _fullScaleRMS = newValue } }
+    var baselineWarmupAlpha: Double {
+        get { lock.withLock { _baselineWarmupAlpha } }
+        set { lock.withLock { _baselineWarmupAlpha = newValue } }
     }
 
-    var attackSmoothing: Float {
-        get { lock.withLock { _attackSmoothing } }
-        set { lock.withLock { _attackSmoothing = newValue } }
+    var baselineWarmupDuration: TimeInterval {
+        get { lock.withLock { _baselineWarmupDuration } }
+        set { lock.withLock { _baselineWarmupDuration = newValue } }
     }
 
-    var releaseSmoothing: Float {
-        get { lock.withLock { _releaseSmoothing } }
-        set { lock.withLock { _releaseSmoothing = newValue } }
+    var candidateFreezeThreshold: Float {
+        get { lock.withLock { _candidateFreezeThreshold } }
+        set { lock.withLock { _candidateFreezeThreshold = newValue } }
+    }
+
+    var lowDeltaStartDB: Float {
+        get { lock.withLock { _lowDeltaStartDB } }
+        set { lock.withLock { _lowDeltaStartDB = newValue } }
+    }
+
+    var lowDeltaFullDB: Float {
+        get { lock.withLock { _lowDeltaFullDB } }
+        set { lock.withLock { _lowDeltaFullDB = newValue } }
+    }
+
+    var midDeltaStartDB: Float {
+        get { lock.withLock { _midDeltaStartDB } }
+        set { lock.withLock { _midDeltaStartDB = newValue } }
+    }
+
+    var midDeltaFullDB: Float {
+        get { lock.withLock { _midDeltaFullDB } }
+        set { lock.withLock { _midDeltaFullDB = newValue } }
+    }
+
+    var upperDeltaStartDB: Float {
+        get { lock.withLock { _upperDeltaStartDB } }
+        set { lock.withLock { _upperDeltaStartDB = newValue } }
+    }
+
+    var upperDeltaFullDB: Float {
+        get { lock.withLock { _upperDeltaFullDB } }
+        set { lock.withLock { _upperDeltaFullDB = newValue } }
+    }
+
+    var lowWeight: Float {
+        get { lock.withLock { _lowWeight } }
+        set { lock.withLock { _lowWeight = newValue } }
+    }
+
+    var midWeight: Float {
+        get { lock.withLock { _midWeight } }
+        set { lock.withLock { _midWeight = newValue } }
+    }
+
+    var upperWeight: Float {
+        get { lock.withLock { _upperWeight } }
+        set { lock.withLock { _upperWeight = newValue } }
+    }
+
+    var broadbandWeight: Float {
+        get { lock.withLock { _broadbandWeight } }
+        set { lock.withLock { _broadbandWeight = newValue } }
     }
 
     var lowBandLowerHz: Double {
@@ -136,51 +200,58 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
         set { lock.withLock { _broadbandActiveFullProportion = newValue } }
     }
 
-    var energyScoreWeight: Float {
-        get { lock.withLock { _energyScoreWeight } }
-        set { lock.withLock { _energyScoreWeight = newValue } }
+    var silenceFloorRMS: Float {
+        get { lock.withLock { _silenceFloorRMS } }
+        set { lock.withLock { _silenceFloorRMS = newValue } }
     }
 
-    var broadbandScoreWeight: Float {
-        get { lock.withLock { _broadbandScoreWeight } }
-        set { lock.withLock { _broadbandScoreWeight = newValue } }
+    var attackSmoothing: Float {
+        get { lock.withLock { _attackSmoothing } }
+        set { lock.withLock { _attackSmoothing = newValue } }
     }
 
-    /// Intensity that must first be crossed to begin counting blow time.
+    var releaseSmoothing: Float {
+        get { lock.withLock { _releaseSmoothing } }
+        set { lock.withLock { _releaseSmoothing = newValue } }
+    }
+
     var strongBlowThreshold: Float {
         get { lock.withLock { _strongBlowThreshold } }
         set { lock.withLock { _strongBlowThreshold = newValue } }
     }
 
-    /// After accumulation has started, intensity above this keeps counting;
-    /// below it, accumulated time slowly decays.
     var strongBlowMaintainThreshold: Float {
         get { lock.withLock { _strongBlowMaintainThreshold } }
         set { lock.withLock { _strongBlowMaintainThreshold = newValue } }
     }
 
-    /// How fast accumulated time decays once intensity falls below the
-    /// maintain threshold. 1.0 decays at the same rate real time passes.
     var strongBlowDecayRate: Double {
         get { lock.withLock { _strongBlowDecayRate } }
         set { lock.withLock { _strongBlowDecayRate = newValue } }
     }
 
-    /// Total accumulated strong-blow time needed before the candle goes out.
     var requiredStrongBlowDuration: TimeInterval {
         get { lock.withLock { _requiredStrongBlowDuration } }
         set { lock.withLock { _requiredStrongBlowDuration = newValue } }
     }
 
-    /// One consistent read of every parameter, taken once per analysis frame
-    /// so a single frame never mixes values from two different tunings.
     func snapshot() -> BlowDetectionParameters {
         lock.withLock {
             BlowDetectionParameters(
-                silenceFloorRMS: _silenceFloorRMS,
-                fullScaleRMS: _fullScaleRMS,
-                attackSmoothing: _attackSmoothing,
-                releaseSmoothing: _releaseSmoothing,
+                baselineAlpha: _baselineAlpha,
+                baselineWarmupAlpha: _baselineWarmupAlpha,
+                baselineWarmupDuration: _baselineWarmupDuration,
+                candidateFreezeThreshold: _candidateFreezeThreshold,
+                lowDeltaStartDB: _lowDeltaStartDB,
+                lowDeltaFullDB: _lowDeltaFullDB,
+                midDeltaStartDB: _midDeltaStartDB,
+                midDeltaFullDB: _midDeltaFullDB,
+                upperDeltaStartDB: _upperDeltaStartDB,
+                upperDeltaFullDB: _upperDeltaFullDB,
+                lowWeight: _lowWeight,
+                midWeight: _midWeight,
+                upperWeight: _upperWeight,
+                broadbandWeight: _broadbandWeight,
                 lowBandLowerHz: _lowBandLowerHz,
                 lowBandUpperHz: _lowBandUpperHz,
                 midBandUpperHz: _midBandUpperHz,
@@ -191,8 +262,9 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
                 broadbandRelativeThreshold: _broadbandRelativeThreshold,
                 broadbandActiveMinProportion: _broadbandActiveMinProportion,
                 broadbandActiveFullProportion: _broadbandActiveFullProportion,
-                energyScoreWeight: _energyScoreWeight,
-                broadbandScoreWeight: _broadbandScoreWeight,
+                silenceFloorRMS: _silenceFloorRMS,
+                attackSmoothing: _attackSmoothing,
+                releaseSmoothing: _releaseSmoothing,
                 strongBlowThreshold: _strongBlowThreshold,
                 strongBlowMaintainThreshold: _strongBlowMaintainThreshold,
                 strongBlowDecayRate: _strongBlowDecayRate,
@@ -206,10 +278,20 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
 
 /// Immutable copy of every tunable parameter, captured atomically.
 struct BlowDetectionParameters: Sendable {
-    let silenceFloorRMS: Float
-    let fullScaleRMS: Float
-    let attackSmoothing: Float
-    let releaseSmoothing: Float
+    let baselineAlpha: Double
+    let baselineWarmupAlpha: Double
+    let baselineWarmupDuration: TimeInterval
+    let candidateFreezeThreshold: Float
+    let lowDeltaStartDB: Float
+    let lowDeltaFullDB: Float
+    let midDeltaStartDB: Float
+    let midDeltaFullDB: Float
+    let upperDeltaStartDB: Float
+    let upperDeltaFullDB: Float
+    let lowWeight: Float
+    let midWeight: Float
+    let upperWeight: Float
+    let broadbandWeight: Float
     let lowBandLowerHz: Double
     let lowBandUpperHz: Double
     let midBandUpperHz: Double
@@ -220,8 +302,9 @@ struct BlowDetectionParameters: Sendable {
     let broadbandRelativeThreshold: Float
     let broadbandActiveMinProportion: Float
     let broadbandActiveFullProportion: Float
-    let energyScoreWeight: Float
-    let broadbandScoreWeight: Float
+    let silenceFloorRMS: Float
+    let attackSmoothing: Float
+    let releaseSmoothing: Float
     let strongBlowThreshold: Float
     let strongBlowMaintainThreshold: Float
     let strongBlowDecayRate: Double
