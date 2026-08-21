@@ -28,16 +28,15 @@ struct TimedSpectrum: Sendable {
 }
 
 /// Rolling window statistics (average + peak) for the Inspector's “Copy 3s
-/// Avg”. `dbFS`/`baselineDbFS` are in dB; every other value is 0–1 normalized.
+/// Avg”. `dbFS` is in dB; every other value is 0–1 normalized.
 struct SpectrumRollingSummary: Sendable {
     let sampleCount: Int
     let dbFSAverage: Float
     let dbFSPeak: Float
-    let baselineDbFSAverage: Float
-    let totalDeltaDBAverage: Float
-    let totalDeltaDBPeak: Float
-    let broadbandAverage: Float
-    let broadbandPeak: Float
+    let windBandRMSAverage: Float
+    let windBandRMSPeak: Float
+    let windRatioAverage: Float
+    let windRatioPeak: Float
     let rawAverage: Float
     let rawPeak: Float
     let smoothedAverage: Float
@@ -47,11 +46,10 @@ struct SpectrumRollingSummary: Sendable {
         sampleCount: 0,
         dbFSAverage: -120,
         dbFSPeak: -120,
-        baselineDbFSAverage: -120,
-        totalDeltaDBAverage: 0,
-        totalDeltaDBPeak: 0,
-        broadbandAverage: 0,
-        broadbandPeak: 0,
+        windBandRMSAverage: 0,
+        windBandRMSPeak: 0,
+        windRatioAverage: 0,
+        windRatioPeak: 0,
         rawAverage: 0,
         rawPeak: 0,
         smoothedAverage: 0,
@@ -129,7 +127,10 @@ final class CeremonySession {
             if let self, self.musicEnabled {
                 try? self.audioEngine?.play(track: self.selectedMusic)
             }
-            try? await Task.sleep(for: .milliseconds(550))
+            // Let the music fade-in settle (iOS Voice Processing cancels it
+            // from the mic), then light the flame. Detection only runs while
+            // phase is lit/wishing, so the fade is never scored.
+            try? await Task.sleep(for: .seconds(CeremonyTiming.lightingDuration))
             guard !Task.isCancelled, let self, self.phase == .lighting else { return }
             self.transition(to: .lit)
 
@@ -174,6 +175,9 @@ final class CeremonySession {
         _ intensity: Float,
         at time: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
+        // Blow intensity is only consumed while the candle is lit. The 0…1
+        // value drives the flame response in real time; extinguish is decided
+        // here only by how long the intensity stays above the thresholds.
         guard phase == .lit || phase == .wishing else {
             blowIntensity = 0
             return
@@ -205,9 +209,7 @@ final class CeremonySession {
             strongBlowDuration += elapsed
         }
 
-        // A 5 ms tolerance absorbs float rounding in the accumulated time
-        // (e.g. four 0.1 s ticks summing to 0.3999…9 instead of 0.4), so a
-        // real blow that reached the required duration is never lost.
+        // A 5 ms tolerance absorbs float rounding in the accumulated time.
         if strongBlowDuration + 0.005 >= parameters.requiredStrongBlowDuration {
             extinguish()
         }
@@ -267,16 +269,19 @@ final class CeremonySession {
         audioEngine?.currentBlowDebugSnapshot ?? .zero
     }
 
+    var debugVoiceProcessingEnabled: Bool {
+        audioEngine?.isVoiceProcessingEnabled ?? false
+    }
+
     var debugSpectrumRollingSummary: SpectrumRollingSummary {
         guard !spectrumHistory.isEmpty else { return .empty }
         var count = 0
         var rmsSquaredSum: Float = 0
         var dbPeak: Float = -120
-        var baselineDbSum: Float = 0
-        var totalDeltaSum: Float = 0
-        var totalDeltaPeak: Float = 0
-        var broadbandSum: Float = 0
-        var broadbandPeak: Float = 0
+        var windRMSSum: Float = 0
+        var windRMSPeak: Float = 0
+        var windRatioSum: Float = 0
+        var windRatioPeak: Float = 0
         var rawSum: Float = 0
         var rawPeak: Float = 0
         var smoothedSum: Float = 0
@@ -289,11 +294,10 @@ final class CeremonySession {
             // averaging dBFS directly would bias toward the quietest frames.
             rmsSquaredSum += snapshot.rms * snapshot.rms
             dbPeak = max(dbPeak, snapshot.dbFS)
-            baselineDbSum += snapshot.baselineDbFS
-            totalDeltaSum += snapshot.totalDeltaDB
-            totalDeltaPeak = max(totalDeltaPeak, snapshot.totalDeltaDB)
-            broadbandSum += snapshot.broadbandScore
-            broadbandPeak = max(broadbandPeak, snapshot.broadbandScore)
+            windRMSSum += snapshot.windBandRMS
+            windRMSPeak = max(windRMSPeak, snapshot.windBandRMS)
+            windRatioSum += snapshot.windRatio
+            windRatioPeak = max(windRatioPeak, snapshot.windRatio)
             rawSum += snapshot.rawScore
             rawPeak = max(rawPeak, snapshot.rawScore)
             smoothedSum += entry.blowScore
@@ -307,11 +311,10 @@ final class CeremonySession {
             sampleCount: count,
             dbFSAverage: meanDbFS,
             dbFSPeak: dbPeak,
-            baselineDbFSAverage: baselineDbSum / total,
-            totalDeltaDBAverage: totalDeltaSum / total,
-            totalDeltaDBPeak: totalDeltaPeak,
-            broadbandAverage: broadbandSum / total,
-            broadbandPeak: broadbandPeak,
+            windBandRMSAverage: windRMSSum / total,
+            windBandRMSPeak: windRMSPeak,
+            windRatioAverage: windRatioSum / total,
+            windRatioPeak: windRatioPeak,
             rawAverage: rawSum / total,
             rawPeak: rawPeak,
             smoothedAverage: smoothedSum / total,
@@ -329,9 +332,7 @@ final class CeremonySession {
                 blowScore: blowIntensity
             )
         )
-        // Drop everything older than the window. Entries are appended in
-        // chronological order, but the first stale entry may be index 0, so
-        // remove-by-predicate is the correct (and complete) trim.
+        // Drop everything older than the 3s window.
         let cutoff = uptime - 3.0
         spectrumHistory.removeAll { $0.uptime < cutoff }
     }
@@ -354,60 +355,28 @@ final class CeremonySession {
         blowConfiguration.strongBlowDecayRate
     }
 
-    var debugBaselineAlpha: Double {
-        blowConfiguration.baselineAlpha
+    var debugWindStart: Float {
+        blowConfiguration.windStart
     }
 
-    var debugLowDeltaStartDB: Float {
-        blowConfiguration.lowDeltaStartDB
+    var debugWindFull: Float {
+        blowConfiguration.windFull
     }
 
-    var debugLowDeltaFullDB: Float {
-        blowConfiguration.lowDeltaFullDB
+    var debugWindRatioStart: Float {
+        blowConfiguration.windRatioStart
     }
 
-    var debugMidDeltaStartDB: Float {
-        blowConfiguration.midDeltaStartDB
+    var debugWindRatioFull: Float {
+        blowConfiguration.windRatioFull
     }
 
-    var debugMidDeltaFullDB: Float {
-        blowConfiguration.midDeltaFullDB
+    var debugEnergyWeight: Float {
+        blowConfiguration.energyWeight
     }
 
-    var debugUpperDeltaStartDB: Float {
-        blowConfiguration.upperDeltaStartDB
-    }
-
-    var debugUpperDeltaFullDB: Float {
-        blowConfiguration.upperDeltaFullDB
-    }
-
-    var debugLowWeight: Float {
-        blowConfiguration.lowWeight
-    }
-
-    var debugMidWeight: Float {
-        blowConfiguration.midWeight
-    }
-
-    var debugUpperWeight: Float {
-        blowConfiguration.upperWeight
-    }
-
-    var debugBroadbandWeight: Float {
-        blowConfiguration.broadbandWeight
-    }
-
-    var debugBroadbandRelativeThreshold: Float {
-        blowConfiguration.broadbandRelativeThreshold
-    }
-
-    var debugBroadbandActiveMinProportion: Float {
-        blowConfiguration.broadbandActiveMinProportion
-    }
-
-    var debugBroadbandActiveFullProportion: Float {
-        blowConfiguration.broadbandActiveFullProportion
+    var debugRatioWeight: Float {
+        blowConfiguration.ratioWeight
     }
 
     var debugMusicVolume: Float {
@@ -430,60 +399,28 @@ final class CeremonySession {
         blowConfiguration.strongBlowDecayRate = max(value, 0)
     }
 
-    func setDebugBaselineAlpha(_ value: Double) {
-        blowConfiguration.baselineAlpha = min(max(value, 0), 0.5)
+    func setDebugWindStart(_ value: Float) {
+        blowConfiguration.windStart = max(value, 0)
     }
 
-    func setDebugLowDeltaStartDB(_ value: Float) {
-        blowConfiguration.lowDeltaStartDB = max(value, 0)
+    func setDebugWindFull(_ value: Float) {
+        blowConfiguration.windFull = max(value, 0)
     }
 
-    func setDebugLowDeltaFullDB(_ value: Float) {
-        blowConfiguration.lowDeltaFullDB = max(value, 0)
+    func setDebugWindRatioStart(_ value: Float) {
+        blowConfiguration.windRatioStart = min(max(value, 0), 1)
     }
 
-    func setDebugMidDeltaStartDB(_ value: Float) {
-        blowConfiguration.midDeltaStartDB = max(value, 0)
+    func setDebugWindRatioFull(_ value: Float) {
+        blowConfiguration.windRatioFull = min(max(value, 0), 1)
     }
 
-    func setDebugMidDeltaFullDB(_ value: Float) {
-        blowConfiguration.midDeltaFullDB = max(value, 0)
+    func setDebugEnergyWeight(_ value: Float) {
+        blowConfiguration.energyWeight = min(max(value, 0), 1)
     }
 
-    func setDebugUpperDeltaStartDB(_ value: Float) {
-        blowConfiguration.upperDeltaStartDB = max(value, 0)
-    }
-
-    func setDebugUpperDeltaFullDB(_ value: Float) {
-        blowConfiguration.upperDeltaFullDB = max(value, 0)
-    }
-
-    func setDebugLowWeight(_ value: Float) {
-        blowConfiguration.lowWeight = min(max(value, 0), 1)
-    }
-
-    func setDebugMidWeight(_ value: Float) {
-        blowConfiguration.midWeight = min(max(value, 0), 1)
-    }
-
-    func setDebugUpperWeight(_ value: Float) {
-        blowConfiguration.upperWeight = min(max(value, 0), 1)
-    }
-
-    func setDebugBroadbandWeight(_ value: Float) {
-        blowConfiguration.broadbandWeight = min(max(value, 0), 1)
-    }
-
-    func setDebugBroadbandRelativeThreshold(_ value: Float) {
-        blowConfiguration.broadbandRelativeThreshold = min(max(value, 0), 1)
-    }
-
-    func setDebugBroadbandActiveMinProportion(_ value: Float) {
-        blowConfiguration.broadbandActiveMinProportion = min(max(value, 0), 1)
-    }
-
-    func setDebugBroadbandActiveFullProportion(_ value: Float) {
-        blowConfiguration.broadbandActiveFullProportion = min(max(value, 0), 1)
+    func setDebugRatioWeight(_ value: Float) {
+        blowConfiguration.ratioWeight = min(max(value, 0), 1)
     }
 
     func setDebugMusicVolume(_ volume: Float) {

@@ -21,6 +21,25 @@ final class AudioEngineTests: XCTestCase {
         )
     }
 
+    /// iOS Voice Processing (AEC) must be active on the mic input once
+    /// detection has started. Needs a physical device + mic permission.
+    func testVoiceProcessingIsEnabledBeforeDetection() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Voice processing requires a physical device.")
+        #else
+        let engine = AudioEngine()
+        do {
+            try await engine.start()
+        } catch AudioEngineError.microphonePermissionDenied {
+            throw XCTSkip("Microphone permission not granted for this test run.")
+        } catch {
+            throw error
+        }
+        XCTAssertTrue(engine.isVoiceProcessingEnabled)
+        engine.stop()
+        #endif
+    }
+
     func testConvertsMonoAssetBufferToStereoPlayerFormat() throws {
         let monoFormat = try XCTUnwrap(
             AVAudioFormat(standardFormatWithSampleRate: 22_050, channels: 1)

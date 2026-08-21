@@ -54,7 +54,7 @@ final class CeremonySessionTests: XCTestCase {
     func testRestartReturnsToReady() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
         session.extinguish()
         session.restart()
 
@@ -65,7 +65,7 @@ final class CeremonySessionTests: XCTestCase {
     func testShortImpulseDoesNotExtinguish() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         session.receiveBlowIntensity(0.95, at: 1)
         session.receiveBlowIntensity(0.05, at: 1.05)
@@ -77,7 +77,7 @@ final class CeremonySessionTests: XCTestCase {
     func testSustainedStrongBlowBeginsExtinguishing() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         session.receiveBlowIntensity(0.9, at: 1)
         session.receiveBlowIntensity(0.9, at: 1.1)
@@ -92,7 +92,7 @@ final class CeremonySessionTests: XCTestCase {
     func testFluctuatingBlowSurvivesShortDipsAboveMaintain() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         // Strong blow with realistic short dips: the energy dips below the
         // start threshold, but remains above the maintain threshold and should
@@ -112,15 +112,15 @@ final class CeremonySessionTests: XCTestCase {
     func testAboveMaintainButBelowStartDoesNotBeginAccumulation() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
-        // 0.35 sits above the maintain threshold (0.25) but below the start
-        // threshold (0.45). Before the start threshold is crossed once, no
-        // blow time may accrue — speech-like energy must never slowly count
-        // toward an extinguish.
-        session.receiveBlowIntensity(0.35, at: 1)
-        session.receiveBlowIntensity(0.35, at: 1.1)
-        session.receiveBlowIntensity(0.35, at: 1.2)
+        // 0.30 sits above the maintain threshold (0.18) but below the start
+        // threshold (0.35). Before the start threshold is crossed once, no
+        // blow time may accrue — background/voice energy must never slowly
+        // count toward an extinguish.
+        session.receiveBlowIntensity(0.30, at: 1)
+        session.receiveBlowIntensity(0.30, at: 1.1)
+        session.receiveBlowIntensity(0.30, at: 1.2)
 
         XCTAssertEqual(session.phase, .lit)
         XCTAssertEqual(session.debugStrongBlowDuration, 0, accuracy: 0.0001)
@@ -129,7 +129,7 @@ final class CeremonySessionTests: XCTestCase {
     func testMaintainLevelAfterStartKeepsAccumulating() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         // Once the start threshold is crossed, the blow keeps counting while
         // intensity stays above the maintain threshold, even if it dips below
@@ -147,7 +147,7 @@ final class CeremonySessionTests: XCTestCase {
     func testDecayedProgressRequiresCrossingStartAgain() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         // Accumulate a little, then fall silent long enough for the slow decay
         // to erase everything back to zero. Sub-start maintain-level energy
@@ -172,13 +172,13 @@ final class CeremonySessionTests: XCTestCase {
     func testThreeSecondHistoryStaysBounded() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
-        // Simulate ~10 s of ticks at 30 Hz. Values are sub-start (0.35 < 0.45)
+        // Simulate ~10 s of ticks at 30 Hz. Values are sub-start (0.30 < 0.35)
         // so the candle never extinguishes and every tick is recorded. The
         // rolling window must settle near N ≈ 90 and never keep growing.
         for index in 0..<300 {
-            session.receiveBlowIntensity(0.35, at: 1.0 + Double(index) / 30.0)
+            session.receiveBlowIntensity(0.30, at: 1.0 + Double(index) / 30.0)
         }
         let summary = session.debugSpectrumRollingSummary
 
@@ -189,14 +189,14 @@ final class CeremonySessionTests: XCTestCase {
     func testOldPeakDisappearsAfterThreeSeconds() async {
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         // Loud (but sub-start) phase for ~1 s at 20 Hz.
         for index in 0..<20 {
-            session.receiveBlowIntensity(0.38, at: 1.0 + Double(index) * 0.05)
+            session.receiveBlowIntensity(0.33, at: 1.0 + Double(index) * 0.05)
         }
         // While the loud frames are still inside the window, the peak shows it.
-        XCTAssertGreaterThanOrEqual(session.debugSpectrumRollingSummary.smoothedPeak, 0.36)
+        XCTAssertGreaterThanOrEqual(session.debugSpectrumRollingSummary.smoothedPeak, 0.31)
 
         // Quiet for well over 3 s — the old peak must fall out of the window.
         for index in 0..<70 {
@@ -207,12 +207,47 @@ final class CeremonySessionTests: XCTestCase {
         XCTAssertLessThanOrEqual(summary.sampleCount, 100)
     }
 
+    func testMusicFadeInDoesNotTrigger() async {
+        let session = CeremonySession()
+        session.lightCandle()
+
+        // While the flame is still lighting (music fade-in, ~1.1s), blow
+        // intensity is not consumed — even strong blow-like values must neither
+        // accumulate nor extinguish.
+        try? await Task.sleep(for: .milliseconds(500))
+        session.receiveBlowIntensity(0.9, at: 1.0)
+        session.receiveBlowIntensity(0.9, at: 1.1)
+        session.receiveBlowIntensity(0.9, at: 1.2)
+
+        XCTAssertEqual(session.phase, .lighting)
+        XCTAssertEqual(session.blowIntensity, 0)
+        XCTAssertEqual(session.debugStrongBlowDuration, 0)
+
+        // Once lit, blow intensity is consumed again.
+        try? await Task.sleep(for: .milliseconds(900))
+        XCTAssertEqual(session.phase, .lit)
+    }
+
+    /// Sustained wind (intensity held above start for ≥ duration) extinguishes.
+    func testSustainedWindTriggersCeremony() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(2000))
+
+        // 30Hz ticks of sustained wind for ~0.5s.
+        for index in 0..<16 {
+            session.receiveBlowIntensity(0.7, at: 1.0 + Double(index) / 30.0)
+        }
+
+        XCTAssertEqual(session.phase, .extinguishing)
+    }
+
     func testExtinguishingCompletesInsideCollapseWindow() async {
         XCTAssertTrue((0.15...0.25).contains(CeremonyTiming.extinguishingDuration))
 
         let session = CeremonySession()
         session.lightCandle()
-        try? await Task.sleep(for: .milliseconds(600))
+        try? await Task.sleep(for: .milliseconds(2000))
 
         session.extinguish()
         XCTAssertEqual(session.phase, .extinguishing)

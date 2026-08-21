@@ -89,6 +89,10 @@ final class AudioEngine {
 
         do {
             try configureSession()
+            // Own-music echo cancelling: enable iOS Voice Processing on the
+            // input BEFORE installing the tap, and treat failure as fatal so
+            // we never fall back to a non-cancelled path.
+            try enableVoiceProcessing()
             try installInputTapIfNeeded()
             if !engine.isRunning {
                 engine.prepare()
@@ -100,6 +104,25 @@ final class AudioEngine {
             throw AudioEngineError.sessionActivationFailed
         }
         startIntensityDelivery()
+    }
+
+    /// Whether the system voice processor (AEC) is active on the mic input.
+    var isVoiceProcessingEnabled: Bool {
+        engine.inputNode.isVoiceProcessingEnabled
+    }
+
+    private func enableVoiceProcessing() throws {
+        do {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+        } catch {
+            throw AudioEngineError.sessionActivationFailed
+        }
+        // Enabling voice processing can change the input node's format; the tap
+        // must be (re)installed against the voice-processed format.
+        if inputTapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            inputTapInstalled = false
+        }
     }
 
     func stop() {

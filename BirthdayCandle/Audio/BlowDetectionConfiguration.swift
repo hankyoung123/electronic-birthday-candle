@@ -9,195 +9,98 @@ import Foundation
 /// In Release builds nothing mutates the shared `.standard` instance, so the
 /// values behave as constants.
 ///
-/// Detection model (this round — adaptive spectral delta):
+/// Detection model (this round):
 ///
-///     spectrum → adaptive baseline → dB deltas → spectral delta score
-///               → raw score → temporal confirmation (CeremonySession)
+///     iOS Voice Processing (AEC) removes our own music from the mic,
+///     then a low-frequency wind detector scores the residual:
 ///
-/// The baseline tracks the *ambient* spectrum (including background music /
-/// noise) so detection measures how much the input rose ABOVE the environment,
-/// not how loud it is in absolute terms. Scoring uses only the low/mid/upper
-/// band deltas plus a small broadband confirmation; the high band and absolute
-/// RMS are diagnostics only. Single production path, additive, no ML, no AEC.
+///     windBandRMS ≈ RMS of the 80–500 Hz band (Parseval-normalized)
+///     windRatio   = power(80–500 Hz) / power(80–5000 Hz)
+///
+///     windEnergyScore = normalize(windBandRMS, windStart, windFull)
+///     windRatioScore  = normalize(windRatio,  windRatioStart, windRatioFull)
+///     rawScore = windEnergyScore × energyWeight + windRatioScore × ratioWeight
+///
+/// Additive only — no hard conjunctions, no energy × ratio products, no fixed
+/// peak frequency. No adaptive baseline, no broadband/flatness features.
 final class BlowDetectionConfiguration: @unchecked Sendable {
     private let lock = NSLock()
 
-    // Baseline (ambient spectrum) adaptation.
-    /// EMA coefficient once the baseline is established.
-    private var _baselineAlpha: Double = 0.02
-    /// Faster EMA used during the initial warm-up window.
-    private var _baselineWarmupAlpha: Double = 0.25
-    /// Length of the initial fast-adaptation window after the detector starts.
-    private var _baselineWarmupDuration: TimeInterval = 0.6
-    /// Above this smoothed score the baseline freezes so a sustained blow never
-    /// gets absorbed into the ambient.
-    private var _candidateFreezeThreshold: Float = 0.20
+    // Wind band edges (Hz).
+    private var _windBandLowerHz: Double = 80
+    private var _windBandUpperHz: Double = 500
+    /// Upper edge of the reference band used for the wind ratio.
+    private var _referenceBandUpperHz: Double = 5_000
 
-    // dB-delta scoring bounds (normalize(deltaDB, startDB, fullDB)).
-    private var _lowDeltaStartDB: Float = 1.5
-    private var _lowDeltaFullDB: Float = 8.0
-    private var _midDeltaStartDB: Float = 1.5
-    private var _midDeltaFullDB: Float = 8.0
-    private var _upperDeltaStartDB: Float = 1.0
-    private var _upperDeltaFullDB: Float = 7.0
+    // Wind-energy score normalization (RMS units, 0 = silence .. 0.3+ loud).
+    private var _windStart: Float = 0.03
+    private var _windFull: Float = 0.14
 
-    // Weights. spectralDeltaScore = low*lowWt + mid*midWt + upper*upperWt.
-    // rawScore = spectralDeltaScore * (1 - broadbandWt) + broadbandScore * broadbandWt.
-    private var _lowWeight: Float = 0.40
-    private var _midWeight: Float = 0.35
-    private var _upperWeight: Float = 0.15
-    private var _broadbandWeight: Float = 0.15
+    // Wind-ratio score normalization (fraction of 80–5000 Hz energy below 500 Hz).
+    private var _windRatioStart: Float = 0.35
+    private var _windRatioFull: Float = 0.65
 
-    // Band edges (Hz). Analysis bands: [80,300) [300,800) [800,2000) [2000,5000).
-    private var _lowBandLowerHz: Double = 80
-    private var _lowBandUpperHz: Double = 300
-    private var _midBandUpperHz: Double = 800
-    private var _upperBandUpperHz: Double = 2_000
-    private var _highBandUpperHz: Double = 5_000
-
-    // Broadband band edges (Hz) and active-bin criteria.
-    private var _broadbandLowerHz: Double = 80
-    private var _broadbandUpperHz: Double = 2_000
-    /// A bin counts as “active” when it holds at least this fraction of the
-    /// band’s peak-power bin.
-    private var _broadbandRelativeThreshold: Float = 0.25
-    /// Proportion of active bins below which Broadband Score is zero.
-    private var _broadbandActiveMinProportion: Float = 0.25
-    /// Proportion of active bins at/above which Broadband Score is one.
-    private var _broadbandActiveFullProportion: Float = 0.70
+    // Additive final-score weights (sum ≈ 1).
+    private var _energyWeight: Float = 0.75
+    private var _ratioWeight: Float = 0.25
 
     // Silence handling / smoothing.
-    /// Below this RMS the broadband term is disabled (and silence stays clean).
+    /// Below this RMS the wind score is zeroed (keeps silence and NaN-free).
     private var _silenceFloorRMS: Float = 0.012
     private var _attackSmoothing: Float = 0.28
     private var _releaseSmoothing: Float = 0.10
 
-    // Strong-blow accumulator (CeremonySession).
-    private var _strongBlowThreshold: Float = 0.40
-    private var _strongBlowMaintainThreshold: Float = 0.20
+    // Strong-blow accumulator (CeremonySession) — deliberately lenient.
+    private var _strongBlowThreshold: Float = 0.35
+    private var _strongBlowMaintainThreshold: Float = 0.18
     private var _strongBlowDecayRate: Double = 0.4
-    private var _requiredStrongBlowDuration: TimeInterval = 0.4
+    private var _requiredStrongBlowDuration: TimeInterval = 0.35
 
     init() {}
 
-    var baselineAlpha: Double {
-        get { lock.withLock { _baselineAlpha } }
-        set { lock.withLock { _baselineAlpha = newValue } }
+    var windBandLowerHz: Double {
+        get { lock.withLock { _windBandLowerHz } }
+        set { lock.withLock { _windBandLowerHz = newValue } }
     }
 
-    var baselineWarmupAlpha: Double {
-        get { lock.withLock { _baselineWarmupAlpha } }
-        set { lock.withLock { _baselineWarmupAlpha = newValue } }
+    var windBandUpperHz: Double {
+        get { lock.withLock { _windBandUpperHz } }
+        set { lock.withLock { _windBandUpperHz = newValue } }
     }
 
-    var baselineWarmupDuration: TimeInterval {
-        get { lock.withLock { _baselineWarmupDuration } }
-        set { lock.withLock { _baselineWarmupDuration = newValue } }
+    var referenceBandUpperHz: Double {
+        get { lock.withLock { _referenceBandUpperHz } }
+        set { lock.withLock { _referenceBandUpperHz = newValue } }
     }
 
-    var candidateFreezeThreshold: Float {
-        get { lock.withLock { _candidateFreezeThreshold } }
-        set { lock.withLock { _candidateFreezeThreshold = newValue } }
+    var windStart: Float {
+        get { lock.withLock { _windStart } }
+        set { lock.withLock { _windStart = newValue } }
     }
 
-    var lowDeltaStartDB: Float {
-        get { lock.withLock { _lowDeltaStartDB } }
-        set { lock.withLock { _lowDeltaStartDB = newValue } }
+    var windFull: Float {
+        get { lock.withLock { _windFull } }
+        set { lock.withLock { _windFull = newValue } }
     }
 
-    var lowDeltaFullDB: Float {
-        get { lock.withLock { _lowDeltaFullDB } }
-        set { lock.withLock { _lowDeltaFullDB = newValue } }
+    var windRatioStart: Float {
+        get { lock.withLock { _windRatioStart } }
+        set { lock.withLock { _windRatioStart = newValue } }
     }
 
-    var midDeltaStartDB: Float {
-        get { lock.withLock { _midDeltaStartDB } }
-        set { lock.withLock { _midDeltaStartDB = newValue } }
+    var windRatioFull: Float {
+        get { lock.withLock { _windRatioFull } }
+        set { lock.withLock { _windRatioFull = newValue } }
     }
 
-    var midDeltaFullDB: Float {
-        get { lock.withLock { _midDeltaFullDB } }
-        set { lock.withLock { _midDeltaFullDB = newValue } }
+    var energyWeight: Float {
+        get { lock.withLock { _energyWeight } }
+        set { lock.withLock { _energyWeight = newValue } }
     }
 
-    var upperDeltaStartDB: Float {
-        get { lock.withLock { _upperDeltaStartDB } }
-        set { lock.withLock { _upperDeltaStartDB = newValue } }
-    }
-
-    var upperDeltaFullDB: Float {
-        get { lock.withLock { _upperDeltaFullDB } }
-        set { lock.withLock { _upperDeltaFullDB = newValue } }
-    }
-
-    var lowWeight: Float {
-        get { lock.withLock { _lowWeight } }
-        set { lock.withLock { _lowWeight = newValue } }
-    }
-
-    var midWeight: Float {
-        get { lock.withLock { _midWeight } }
-        set { lock.withLock { _midWeight = newValue } }
-    }
-
-    var upperWeight: Float {
-        get { lock.withLock { _upperWeight } }
-        set { lock.withLock { _upperWeight = newValue } }
-    }
-
-    var broadbandWeight: Float {
-        get { lock.withLock { _broadbandWeight } }
-        set { lock.withLock { _broadbandWeight = newValue } }
-    }
-
-    var lowBandLowerHz: Double {
-        get { lock.withLock { _lowBandLowerHz } }
-        set { lock.withLock { _lowBandLowerHz = newValue } }
-    }
-
-    var lowBandUpperHz: Double {
-        get { lock.withLock { _lowBandUpperHz } }
-        set { lock.withLock { _lowBandUpperHz = newValue } }
-    }
-
-    var midBandUpperHz: Double {
-        get { lock.withLock { _midBandUpperHz } }
-        set { lock.withLock { _midBandUpperHz = newValue } }
-    }
-
-    var upperBandUpperHz: Double {
-        get { lock.withLock { _upperBandUpperHz } }
-        set { lock.withLock { _upperBandUpperHz = newValue } }
-    }
-
-    var highBandUpperHz: Double {
-        get { lock.withLock { _highBandUpperHz } }
-        set { lock.withLock { _highBandUpperHz = newValue } }
-    }
-
-    var broadbandLowerHz: Double {
-        get { lock.withLock { _broadbandLowerHz } }
-        set { lock.withLock { _broadbandLowerHz = newValue } }
-    }
-
-    var broadbandUpperHz: Double {
-        get { lock.withLock { _broadbandUpperHz } }
-        set { lock.withLock { _broadbandUpperHz = newValue } }
-    }
-
-    var broadbandRelativeThreshold: Float {
-        get { lock.withLock { _broadbandRelativeThreshold } }
-        set { lock.withLock { _broadbandRelativeThreshold = newValue } }
-    }
-
-    var broadbandActiveMinProportion: Float {
-        get { lock.withLock { _broadbandActiveMinProportion } }
-        set { lock.withLock { _broadbandActiveMinProportion = newValue } }
-    }
-
-    var broadbandActiveFullProportion: Float {
-        get { lock.withLock { _broadbandActiveFullProportion } }
-        set { lock.withLock { _broadbandActiveFullProportion = newValue } }
+    var ratioWeight: Float {
+        get { lock.withLock { _ratioWeight } }
+        set { lock.withLock { _ratioWeight = newValue } }
     }
 
     var silenceFloorRMS: Float {
@@ -238,30 +141,15 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
     func snapshot() -> BlowDetectionParameters {
         lock.withLock {
             BlowDetectionParameters(
-                baselineAlpha: _baselineAlpha,
-                baselineWarmupAlpha: _baselineWarmupAlpha,
-                baselineWarmupDuration: _baselineWarmupDuration,
-                candidateFreezeThreshold: _candidateFreezeThreshold,
-                lowDeltaStartDB: _lowDeltaStartDB,
-                lowDeltaFullDB: _lowDeltaFullDB,
-                midDeltaStartDB: _midDeltaStartDB,
-                midDeltaFullDB: _midDeltaFullDB,
-                upperDeltaStartDB: _upperDeltaStartDB,
-                upperDeltaFullDB: _upperDeltaFullDB,
-                lowWeight: _lowWeight,
-                midWeight: _midWeight,
-                upperWeight: _upperWeight,
-                broadbandWeight: _broadbandWeight,
-                lowBandLowerHz: _lowBandLowerHz,
-                lowBandUpperHz: _lowBandUpperHz,
-                midBandUpperHz: _midBandUpperHz,
-                upperBandUpperHz: _upperBandUpperHz,
-                highBandUpperHz: _highBandUpperHz,
-                broadbandLowerHz: _broadbandLowerHz,
-                broadbandUpperHz: _broadbandUpperHz,
-                broadbandRelativeThreshold: _broadbandRelativeThreshold,
-                broadbandActiveMinProportion: _broadbandActiveMinProportion,
-                broadbandActiveFullProportion: _broadbandActiveFullProportion,
+                windBandLowerHz: _windBandLowerHz,
+                windBandUpperHz: _windBandUpperHz,
+                referenceBandUpperHz: _referenceBandUpperHz,
+                windStart: _windStart,
+                windFull: _windFull,
+                windRatioStart: _windRatioStart,
+                windRatioFull: _windRatioFull,
+                energyWeight: _energyWeight,
+                ratioWeight: _ratioWeight,
                 silenceFloorRMS: _silenceFloorRMS,
                 attackSmoothing: _attackSmoothing,
                 releaseSmoothing: _releaseSmoothing,
@@ -278,30 +166,15 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
 
 /// Immutable copy of every tunable parameter, captured atomically.
 struct BlowDetectionParameters: Sendable {
-    let baselineAlpha: Double
-    let baselineWarmupAlpha: Double
-    let baselineWarmupDuration: TimeInterval
-    let candidateFreezeThreshold: Float
-    let lowDeltaStartDB: Float
-    let lowDeltaFullDB: Float
-    let midDeltaStartDB: Float
-    let midDeltaFullDB: Float
-    let upperDeltaStartDB: Float
-    let upperDeltaFullDB: Float
-    let lowWeight: Float
-    let midWeight: Float
-    let upperWeight: Float
-    let broadbandWeight: Float
-    let lowBandLowerHz: Double
-    let lowBandUpperHz: Double
-    let midBandUpperHz: Double
-    let upperBandUpperHz: Double
-    let highBandUpperHz: Double
-    let broadbandLowerHz: Double
-    let broadbandUpperHz: Double
-    let broadbandRelativeThreshold: Float
-    let broadbandActiveMinProportion: Float
-    let broadbandActiveFullProportion: Float
+    let windBandLowerHz: Double
+    let windBandUpperHz: Double
+    let referenceBandUpperHz: Double
+    let windStart: Float
+    let windFull: Float
+    let windRatioStart: Float
+    let windRatioFull: Float
+    let energyWeight: Float
+    let ratioWeight: Float
     let silenceFloorRMS: Float
     let attackSmoothing: Float
     let releaseSmoothing: Float
