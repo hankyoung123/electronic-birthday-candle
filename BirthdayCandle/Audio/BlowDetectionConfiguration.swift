@@ -11,50 +11,44 @@ import Foundation
 ///
 /// Detection model (this round):
 ///
-///     iOS Voice Processing (AEC) removes our own music from the mic,
-///     then a low-frequency wind detector scores the residual:
+///     Clean Mic PCM (echo-cancelled input from AudioEngine)
+///     → 80–500 Hz band-pass RMS (direct time-domain)   → windEnergyScore
+///     → FFT wind ratio  power(80–500)/power(80–5000)   → windRatioScore
 ///
-///     windBandRMS ≈ RMS of the 80–500 Hz band (Parseval-normalized)
-///     windRatio   = power(80–500 Hz) / power(80–5000 Hz)
-///
-///     windEnergyScore = normalize(windBandRMS, windStart, windFull)
-///     windRatioScore  = normalize(windRatio,  windRatioStart, windRatioFull)
 ///     rawScore = windEnergyScore × energyWeight + windRatioScore × ratioWeight
 ///
-/// Additive only — no hard conjunctions, no energy × ratio products, no fixed
-/// peak frequency. No adaptive baseline, no broadband/flatness features.
+/// Then CeremonySession accumulates temporal evidence before extinguishing.
+/// No adaptive baseline, no silence hard-gate, no broadband features.
 final class BlowDetectionConfiguration: @unchecked Sendable {
     private let lock = NSLock()
 
     // Wind band edges (Hz).
     private var _windBandLowerHz: Double = 80
     private var _windBandUpperHz: Double = 500
-    /// Upper edge of the reference band used for the wind ratio.
+    /// Upper edge of the FFT reference band used for the wind ratio.
     private var _referenceBandUpperHz: Double = 5_000
 
-    // Wind-energy score normalization (RMS units, 0 = silence .. 0.3+ loud).
-    private var _windStart: Float = 0.03
-    private var _windFull: Float = 0.14
+    // Wind-energy score normalization (band-passed 80–500 Hz RMS units).
+    private var _windStart: Float = 0.015
+    private var _windFull: Float = 0.065
 
     // Wind-ratio score normalization (fraction of 80–5000 Hz energy below 500 Hz).
     private var _windRatioStart: Float = 0.35
     private var _windRatioFull: Float = 0.65
 
     // Additive final-score weights (sum ≈ 1).
-    private var _energyWeight: Float = 0.75
-    private var _ratioWeight: Float = 0.25
+    private var _energyWeight: Float = 0.85
+    private var _ratioWeight: Float = 0.15
 
-    // Silence handling / smoothing.
-    /// Below this RMS the wind score is zeroed (keeps silence and NaN-free).
-    private var _silenceFloorRMS: Float = 0.012
+    // Attack / release smoothing of the final score.
     private var _attackSmoothing: Float = 0.28
     private var _releaseSmoothing: Float = 0.10
 
-    // Strong-blow accumulator (CeremonySession) — deliberately lenient.
-    private var _strongBlowThreshold: Float = 0.35
-    private var _strongBlowMaintainThreshold: Float = 0.18
-    private var _strongBlowDecayRate: Double = 0.4
-    private var _requiredStrongBlowDuration: TimeInterval = 0.35
+    // Temporal evidence accumulator (CeremonySession).
+    private var _strongBlowThreshold: Float = 0.30
+    private var _strongBlowMaintainThreshold: Float = 0.12
+    private var _strongBlowDecayRate: Double = 0.35
+    private var _requiredStrongBlowDuration: TimeInterval = 0.30
 
     init() {}
 
@@ -103,11 +97,6 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
         set { lock.withLock { _ratioWeight = newValue } }
     }
 
-    var silenceFloorRMS: Float {
-        get { lock.withLock { _silenceFloorRMS } }
-        set { lock.withLock { _silenceFloorRMS = newValue } }
-    }
-
     var attackSmoothing: Float {
         get { lock.withLock { _attackSmoothing } }
         set { lock.withLock { _attackSmoothing = newValue } }
@@ -150,7 +139,6 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
                 windRatioFull: _windRatioFull,
                 energyWeight: _energyWeight,
                 ratioWeight: _ratioWeight,
-                silenceFloorRMS: _silenceFloorRMS,
                 attackSmoothing: _attackSmoothing,
                 releaseSmoothing: _releaseSmoothing,
                 strongBlowThreshold: _strongBlowThreshold,
@@ -175,7 +163,6 @@ struct BlowDetectionParameters: Sendable {
     let windRatioFull: Float
     let energyWeight: Float
     let ratioWeight: Float
-    let silenceFloorRMS: Float
     let attackSmoothing: Float
     let releaseSmoothing: Float
     let strongBlowThreshold: Float

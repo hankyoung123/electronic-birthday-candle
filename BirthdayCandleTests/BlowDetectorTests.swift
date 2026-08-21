@@ -11,55 +11,71 @@ final class BlowDetectorTests: XCTestCase {
         XCTAssertLessThan(result, 0.03)
     }
 
-    /// A real breath = low-frequency airflow: the wind band (80–500 Hz) lights
-    /// up and the wind ratio is high.
+    /// A real breath = low-frequency airflow: the direct 80–500 Hz band RMS
+    /// lights up and the wind ratio is high → clear score.
     func testLowFrequencyWindProducesHighScore() {
         let detector = BlowDetector()
         let wind = windLikeSignal(amplitude: 0.16)
-
         let result = feed(wind, detector: detector, count: 16)
-
         XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
-    /// High-frequency-only sounds carry almost no 80–500 Hz energy → low score,
-    /// even though they are loud.
-    func testHighFrequencySoundProducesLowScore() {
+    /// Light wind produces a clearly visible (flame-response) score without
+    /// being deaf or at full scale.
+    func testLightWindProducesUsefulScore() {
+        let detector = BlowDetector()
+        let wind = windLikeSignal(amplitude: 0.05)
+        let result = feed(wind, detector: detector, count: 16)
+        XCTAssertGreaterThan(result, 0.15)
+        XCTAssertLessThan(result, 1.0)
+    }
+
+    /// A brief dip in the signal must not collapse the (smoothed) wind score.
+    func testWindScoreSurvivesShortSignalDrop() {
+        let detector = BlowDetector()
+        let wind = windLikeSignal(amplitude: 0.16)
+        _ = feed(wind, detector: detector, count: 10)
+        let steady = detector.currentIntensity
+
+        _ = feed([Float](repeating: 0, count: frameCount), detector: detector, count: 2)
+        let dipped = detector.currentIntensity
+        XCTAssertGreaterThan(dipped, steady * 0.5)
+
+        _ = feed(wind, detector: detector, count: 4)
+        let recovered = detector.currentIntensity
+        XCTAssertGreaterThan(recovered, steady * 0.8)
+    }
+
+    /// High-frequency-only sound carries almost no 80–500 Hz energy → low score.
+    func testHighFrequencySoundDoesNotTrigger() {
         let detector = BlowDetector()
         let high = highFrequencyNoise(amplitude: 0.3)
-
         let result = feed(high, detector: detector, count: 16)
-
         XCTAssertLessThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
-    /// A mid-frequency tone is loud but not wind → must not strongly trigger.
-    func testMidFrequencyToneDoesNotStronglyTrigger() {
+    /// A loud mid-frequency tone is not wind → must not trigger.
+    func testMidFrequencyToneDoesNotTrigger() {
         let detector = BlowDetector()
         let tone = sineWave(frequency: 1_000, amplitude: 0.5)
-
         let result = feed(tone, detector: detector, count: 16)
-
         XCTAssertLessThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
-    /// The soft shape check: wind-like energy concentrates below 500 Hz, so the
-    /// wind ratio is clearly higher than for flat/white noise (energy spread up
-    /// to the reference 5 kHz band).
+    /// The soft shape check: wind concentrates below 500 Hz, so its wind ratio
+    /// is clearly higher than flat/white noise spread up to 5 kHz.
     func testWindRatioIncreasesForWindLikeSignal() {
         let wind = debugSnapshot(forSignal: windLikeSignal(amplitude: 0.16))
         let noise = debugSnapshot(forSignal: deterministicNoise(amplitude: 0.16))
-
         XCTAssertGreaterThan(wind.windRatio, 0.5)
         XCTAssertGreaterThan(wind.windRatio, noise.windRatio)
     }
 
-    /// The low-frequency wind band RMS must be comparable to (a fraction of) the
-    /// total RMS and grow with louder wind.
+    /// The band-passed 80–500 Hz RMS grows with louder wind and stays bounded
+    /// by the total RMS.
     func testWindBandRMSGrowsWithWindLevel() {
         let light = debugSnapshot(forSignal: windLikeSignal(amplitude: 0.08))
         let strong = debugSnapshot(forSignal: windLikeSignal(amplitude: 0.22))
-
         XCTAssertGreaterThan(strong.windBandRMS, light.windBandRMS)
         XCTAssertLessThanOrEqual(strong.windBandRMS, strong.rms + 0.0001)
     }

@@ -21,11 +21,11 @@ final class AudioEngineTests: XCTestCase {
         )
     }
 
-    /// iOS Voice Processing (AEC) must be active on the mic input once
+    /// The audio session must be configured for echo-cancelled (AEC) input once
     /// detection has started. Needs a physical device + mic permission.
-    func testVoiceProcessingIsEnabledBeforeDetection() async throws {
+    func testEchoCancelledInputConfigured() async throws {
         #if targetEnvironment(simulator)
-        throw XCTSkip("Voice processing requires a physical device.")
+        throw XCTSkip("Echo-cancelled input requires a physical device.")
         #else
         let engine = AudioEngine()
         do {
@@ -35,7 +35,7 @@ final class AudioEngineTests: XCTestCase {
         } catch {
             throw error
         }
-        XCTAssertTrue(engine.isVoiceProcessingEnabled)
+        XCTAssertTrue(engine.isEchoCancelledInputEnabled)
         engine.stop()
         #endif
     }

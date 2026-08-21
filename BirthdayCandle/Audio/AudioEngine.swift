@@ -89,10 +89,6 @@ final class AudioEngine {
 
         do {
             try configureSession()
-            // Own-music echo cancelling: enable iOS Voice Processing on the
-            // input BEFORE installing the tap, and treat failure as fatal so
-            // we never fall back to a non-cancelled path.
-            try enableVoiceProcessing()
             try installInputTapIfNeeded()
             if !engine.isRunning {
                 engine.prepare()
@@ -106,23 +102,9 @@ final class AudioEngine {
         startIntensityDelivery()
     }
 
-    /// Whether the system voice processor (AEC) is active on the mic input.
-    var isVoiceProcessingEnabled: Bool {
-        engine.inputNode.isVoiceProcessingEnabled
-    }
-
-    private func enableVoiceProcessing() throws {
-        do {
-            try engine.inputNode.setVoiceProcessingEnabled(true)
-        } catch {
-            throw AudioEngineError.sessionActivationFailed
-        }
-        // Enabling voice processing can change the input node's format; the tap
-        // must be (re)installed against the voice-processed format.
-        if inputTapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            inputTapInstalled = false
-        }
+    /// Whether the audio session is configured for echo-cancelled (AEC) input.
+    var isEchoCancelledInputEnabled: Bool {
+        AVAudioSession.sharedInstance().isEchoCancelledInputEnabled
     }
 
     func stop() {
@@ -291,7 +273,18 @@ final class AudioEngine {
             mode: .default,
             options: [.defaultToSpeaker]
         )
+        // Echo-cancelled input is the single AEC path: the system removes our
+        // own speaker playback from the mic. Must be applied via the shared
+        // session-config path so first start, interruption recovery and route
+        // changes all behave identically.
+        try session.setPrefersEchoCancelledInput(true)
         try session.setActive(true)
+        // The preference is a hint on most hardware; verify it actually took.
+        // If the hardware cannot honour it, treat startup as failed — we never
+        // run a non-cancelled detection path.
+        guard session.isEchoCancelledInputEnabled else {
+            throw AudioEngineError.sessionActivationFailed
+        }
         preferBuiltInMicrophone(on: session)
         try session.overrideOutputAudioPort(.speaker)
         updateCurrentInputDescription(from: session)

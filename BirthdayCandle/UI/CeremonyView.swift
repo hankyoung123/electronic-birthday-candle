@@ -124,7 +124,7 @@ private struct BlowInspector: View {
 
                 metric("Input Route", session.debugInputDescription)
                 metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
-                metric("Voice Processing", session.debugVoiceProcessingEnabled ? "On" : "Off")
+                metric("Echo Cancelled", session.debugEchoCancelledInputEnabled ? "On" : "Off")
                 metric("RMS / dBFS", "\(formatted(snapshot.rms)) / \(String(format: "%.1f dB", snapshot.dbFS))")
 
                 HStack {
@@ -136,7 +136,6 @@ private struct BlowInspector: View {
                     copyButton("Copy 3s Avg", copiedLabel: "3s Avg ✓", text: rollingText)
                 }
 
-                metric("Wind Power", formatted(snapshot.windBandPower))
                 progressRow("Wind RMS", value: Double(snapshot.windBandRMS), detail: formatted(snapshot.windBandRMS))
                 progressRow("Wind Ratio", value: Double(snapshot.windRatio), detail: "\(Int((snapshot.windRatio * 100).rounded()))%")
                 metric("Wind Energy Score", formatted(snapshot.windEnergyScore))
@@ -145,15 +144,15 @@ private struct BlowInspector: View {
                 progressRow("Smoothed", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
 
                 progressRow(
-                    "Strong",
+                    "Evidence",
                     value: Double(
                         session.debugRequiredStrongBlowDuration > 0
-                            ? session.debugStrongBlowDuration / session.debugRequiredStrongBlowDuration
+                            ? session.debugBlowEvidence / session.debugRequiredStrongBlowDuration
                             : 0
                     ),
                     detail: String(
                         format: "%.2f / %.2f s",
-                        session.debugStrongBlowDuration,
+                        session.debugBlowEvidence,
                         session.debugRequiredStrongBlowDuration
                     )
                 )
@@ -253,10 +252,9 @@ private struct BlowInspector: View {
         return """
         Input: \(session.debugInputDescription)
         SampleRate: \(Int(session.debugInputSampleRate.rounded()))
-        VoiceProcessing: \(session.debugVoiceProcessingEnabled ? "On" : "Off")
+        EchoCancelled: \(session.debugEchoCancelledInputEnabled ? "On" : "Off")
         dBFS: \(String(format: "%.1f", s.dbFS))
 
-        WindPower: \(String(format: "%.4f", s.windBandPower))
         WindRMS: \(String(format: "%.3f", s.windBandRMS))
         WindRatio: \(String(format: "%.2f", s.windRatio))
 

@@ -72,7 +72,7 @@ final class CeremonySession {
     private let hapticEngine: HapticEngine?
     private let blowConfiguration: BlowDetectionConfiguration
     private var ceremonyTask: Task<Void, Never>?
-    private var strongBlowDuration: TimeInterval = 0
+    private var blowEvidence: TimeInterval = 0
     private var lastBlowSampleTime: TimeInterval?
     #if DEBUG
     private var spectrumHistory: [TimedSpectrum] = []
@@ -162,7 +162,7 @@ final class CeremonySession {
         ceremonyTask?.cancel()
         audioEngine?.stop()
         blowIntensity = 0
-        strongBlowDuration = 0
+        blowEvidence = 0
         lastBlowSampleTime = nil
         extinguishedAt = nil
         #if DEBUG
@@ -192,25 +192,19 @@ final class CeremonySession {
         lastBlowSampleTime = time
 
         let parameters = blowConfiguration.snapshot()
-        if strongBlowDuration > 0 {
-            // Already counting a blow: keep accruing while the user is still
-            // blowing meaningfully (above the maintain threshold), and slowly
-            // lose progress below it.
-            if blowIntensity >= parameters.strongBlowMaintainThreshold {
-                strongBlowDuration += elapsed
-            } else {
-                strongBlowDuration = max(
-                    0,
-                    strongBlowDuration - elapsed * parameters.strongBlowDecayRate
-                )
-            }
-        } else if blowIntensity >= parameters.strongBlowThreshold {
-            // First crossing of the start threshold begins accumulation.
-            strongBlowDuration += elapsed
+        // Evidence accumulator: strong blowing adds fast, weak (maintain-level)
+        // adds slowly, and sub-maintain decays — a short dip mid-blow must not
+        // erase the whole effort.
+        if blowIntensity >= parameters.strongBlowThreshold {
+            blowEvidence += elapsed
+        } else if blowIntensity >= parameters.strongBlowMaintainThreshold {
+            blowEvidence += elapsed * 0.65
+        } else {
+            blowEvidence = max(0, blowEvidence - elapsed * parameters.strongBlowDecayRate)
         }
 
-        // A 5 ms tolerance absorbs float rounding in the accumulated time.
-        if strongBlowDuration + 0.005 >= parameters.requiredStrongBlowDuration {
+        // A 5 ms tolerance absorbs float rounding in the accumulated evidence.
+        if blowEvidence + 0.005 >= parameters.requiredStrongBlowDuration {
             extinguish()
         }
     }
@@ -239,7 +233,7 @@ final class CeremonySession {
         ceremonyTask?.cancel()
         audioEngine?.stop()
         blowIntensity = 0
-        strongBlowDuration = 0
+        blowEvidence = 0
         lastBlowSampleTime = nil
         #if DEBUG
         spectrumHistory.removeAll(keepingCapacity: true)
@@ -269,8 +263,8 @@ final class CeremonySession {
         audioEngine?.currentBlowDebugSnapshot ?? .zero
     }
 
-    var debugVoiceProcessingEnabled: Bool {
-        audioEngine?.isVoiceProcessingEnabled ?? false
+    var debugEchoCancelledInputEnabled: Bool {
+        audioEngine?.isEchoCancelledInputEnabled ?? false
     }
 
     var debugSpectrumRollingSummary: SpectrumRollingSummary {
@@ -337,7 +331,7 @@ final class CeremonySession {
         spectrumHistory.removeAll { $0.uptime < cutoff }
     }
 
-    var debugStrongBlowDuration: TimeInterval { strongBlowDuration }
+    var debugBlowEvidence: TimeInterval { blowEvidence }
 
     var debugStrongBlowStartThreshold: Float {
         blowConfiguration.strongBlowThreshold
