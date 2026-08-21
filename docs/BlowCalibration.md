@@ -1,110 +1,100 @@
-# 真机校准手册（Echo-Cancelled 输入 + 带通风噪 + 时间证据）
+# 真机校准手册（Voice Processing AEC + 带通风噪 + Peak Hold + 时间证据）
 
-> 目标：真机确认 AEC 消掉自家音乐，并校准 80–500 Hz 带通风噪 + 证据累计的最终参数。
-> 本手册只针对真机（Debug 构建），Release 不包含可调入口。
-> ⚠️ 要求 iOS 18.2+（本工程部署目标已从 17.0 提升到 18.2，以使用
-> `setPrefersEchoCancelledInput`——计划指定的唯一 AEC 路径）。
+> 目标：真机确认 Voice Processing 消掉自家音乐，并校准 80–500 Hz 带通风噪、
+> Peak Hold 与证据累计的最终参数。只针对真机（Debug 构建），Release 无可调入口。
 
 ## 0. 当前检测链路（唯一生产路径）
 
 ```text
-Music → Speaker
-          │
-          ▼
-iOS Echo-Cancelled Input（AEC，AVAudioSession setPrefersEchoCancelledInput）
-          │
-Mic ──────┘
-          ↓
-Clean Mic PCM
-          ↓
-80–500 Hz 带通（6 阶，时间域）→ windBandRMS → Wind Energy Score
-FFT windRatio（80–500 / 80–5000）→ Wind Ratio Score
-          ↓
-rawScore = WindEnergy×0.85 + Ratio×0.15
-          ↓
-BlowDetector → 连续 0…1 intensity（驱动火焰，实时）
-          ↓
-CeremonySession Evidence Accumulator → 达标后 extinguish()
+AVAudioSession（.playAndRecord + .default + .defaultToSpeaker）
+→ AVAudioEngine Voice Processing / AEC（setVoiceProcessingEnabled）
+→ 80–500 Hz Direct Band-pass RMS（6 阶，时间域）
+→ Wind Ratio（FFT：80–500 / 80–5000）
+→ Blow Score = WindEnergy×0.90 + Ratio×0.10
+→ Peak Hold（150ms）
+→ attack/release smoothing
+→ 连续 0…1 intensity（驱动火焰）
+→ Evidence Accumulator（CeremonySession）→ Extinguish
 ```
 
-- **AEC**：`configureSession()` 统一设置
-  `.playAndRecord + .default + .defaultToSpeaker` + `setPrefersEchoCancelledInput(true)`；
-  失败/未生效 → 启动失败（不 fallback）。首次启动、中断恢复、Route Change 全走同一配置路径。
-  面板显示 `Echo Cancelled: On/Off`（`isEchoCancelledInputEnabled`）。
-- **Wind Energy**：时间域 6 阶 Butterworth 带通 80–500 Hz → 直接 RMS；
-  **FFT 只负责 Wind Ratio**。
-- **无**：Voice Processing、silenceFloor 硬门槛（低能量由 windStart/Full 控制）、
-  自适应基线、宽带、delta 特征、硬乘门槛。
+- **AEC**：Voice Processing 是唯一 AEC 路径（Echo-Cancelled Input 已撤销——iPhone 15
+  Pro Max 上 `isEchoCancelledInputEnabled` 强制校验会直接启动失败）。
+  统一 `configureInputPath()` = `configureSession → enableVoiceProcessing → installTap`，
+  首次启动/中断恢复/Route Change 全走同一顺序；VP 启用失败 → 启动失败（无第二条 AEC 路径）。
+- **Wind Detector／Evidence 继续保留**：不恢复 Adaptive Baseline / Delta / Broadband /
+  多频段评分 / silenceFloor 硬门槛。
 
-### 证据累计（CeremonySession，P1）
+### 证据累计（CeremonySession）
 
 ```text
-intensity ≥ start(0.30)            → evidence += dt
-intensity ≥ maintain(0.12)         → evidence += dt × 0.65
-否则                               → evidence = max(0, evidence − dt × decay(0.35))
-evidence ≥ required(0.30s)         → extinguish()
+intensity ≥ start(0.28)           → evidence += 1.0 × dt
+intensity ≥ maintain(0.10)        → evidence += 0.60 × dt
+否则                              → evidence = max(0, evidence − 0.40 × dt)
+evidence ≥ required(0.28s)        → extinguish()
 ```
 
-强吹快积累、弱吹慢积累、短暂掉分只轻微衰减、停止吹气明显归零。
+### Peak Hold（BlowDetector，150ms）
+
+```text
+if rawScore >= heldPeak            { heldPeak = rawScore; holdRemaining = 0.15s }
+else if holdRemaining > 0          { holdRemaining -= dt }
+else                               { heldPeak = rawScore }
+有效的 score = hold 内 max(rawScore, heldPeak)，再进 attack/release 平滑
+```
+
+目标：真实吹气出现 `0.65 / 0.58 / 0.09(VP 短暂压制) / 0.54 / 0.61` 时，有效强度保持连续。
 
 ## 1. Debug Panel
 
-- `Input Route` / `Sample Rate` / **`Echo Cancelled: On/Off`**
-- `RMS / dBFS`
-- `Wind RMS` / `Wind Ratio`
-- `Wind Energy Score` / `Wind Ratio Score` / `Raw Score` / `Smoothed`
-- `Evidence` / `Required Evidence`
-- **Live Tuning**：`Wind Start / Full`、`Wind Ratio Start / Full`、`Energy Wt / Ratio Wt`、`Start / Maintain / Duration / Decay`、`Music Volume`
-- **Copy Values** 10 键；**Copy Snapshot / Copy 3s Avg**
+- `Voice Processing: On/Off`；`Mic Permission`；`Session Active`；`Start Failure`（DEBUG，例如
+  `Voice Processing initialization failed`）
+- `Input Route` / `Sample Rate`
+- `Total RMS / dBFS`、`Wind RMS`、`Wind Ratio`
+- `Wind Energy Score`、`Wind Ratio Score`、`Raw Score`、`Held Score`、`Smoothed Score`
+- `Evidence` / `Required Evidence`；`Music Volume`
+- **Live Tuning**：`Peak Hold`、`Wind Start/Full`、`Energy/Ratio Wt`、`Start/Maintain/Duration/Decay`、`Music Volume`
+- **Copy Values** 11 键；**Copy Snapshot / Copy 3s Avg**
 
-## 2. 真机验证（按计划三轮回）
+## 2. 真机验证（顺序）
 
-**第一轮：只验证 P0（AEC + 带通）**
-逐项记录 `Wind RMS / Wind Ratio / Raw / Smoothed`：
+| # | 场景 | 期望 |
+| --- | --- | --- |
+| 1 | 无音乐 + 普通吹气 | 0.3–0.8s 熄灭 |
+| 2 | 无音乐 + 轻吹 | 火焰立即明显响应 |
+| 3 | 正常讲话 | 不轻易熄灭 |
+| 4–6 | 音乐 30 / 70 / 100% | Raw 不明显增加（VP 生效） |
+| 7–8 | 音乐 70/100% + 普通吹气 | 可靠熄灭 |
 
-| 场景 | 期望 |
-| --- | --- |
-| 安静 | Wind RMS≈0，Raw≈0 |
-| 讲话 | Raw 低，不触发 |
-| 音乐 30/70/100% | **Raw 不明显增加**（AEC 生效）|
-| 正常吹气 / 轻吹 | **Wind RMS 明显上升**；轻吹 Raw>0.15（火焰明显响应）|
+另重点：持续吹气中偶发掉分（VP 瞬时压制）→ 仍能正常熄灭（Peak Hold + 证据容忍）。
 
-若音乐音量增大而 Raw 显著上升 → AEC 未生效，先查 `Echo Cancelled: On` / 输出输入同一 engine。
-
-**第二轮：P1（Evidence）**
-- 普通力度吹气 → 0.3–0.8s 熄灭。
-- 吹气中偶发掉分 → 不影响熄灭（0.65 慢积累 + 衰减容忍）。
-- 停止吹气 → evidence 自动消退、不熄灭。
-
-**第三轮**：仍出现明显的“高→低→高→低”掉分，才加 Peak Hold（120–150ms）。当前未实现。
+若音乐音量增大而 Raw 显著上升 → 先查 `Voice Processing: On`、输入输出同一 engine。
 
 ## 3. 定参规则
 
-1. **Wind Start/Full**（默认 0.015 / 0.065，带通后 RMS 量纲）：轻吹响应不足 → 再调低 Start；
-   讲话/底噪误触发 → 调高 Start/Full。
-2. **Wind Ratio Start/Full**（0.35 / 0.65）：滤纯音/白噪/拍手等高频声。
-3. **Energy/Ratio Wt**（0.85 / 0.15）：保持能量主导；高频误触发多 → 微调高 Ratio Wt。
-4. **Start/Maintain/Duration/Decay**（0.30 / 0.12 / 0.30 / 0.35）：真机调。
-5. **已知边界**：浊音讲话/低音音乐本身是低频主导，合成信号下 raw 会偏高（音乐≈0.5、
-   讲话≈0.39）——这正是依赖 AEC 消音乐 + 真机调参的原因；第二阶段仅在“AEC+带通仍分不清”时
-   上 Template Matching（见 §6）。
+1. **Wind Start/Full**（默认 0.012 / 0.055，带通后 RMS 量纲）：轻吹响应不足 → 调低 Start；
+   讲话/底噪误触发 → 调高。
+2. **Energy/Ratio Wt**（0.90 / 0.10）：**Wind Energy 主特征、Ratio 仅轻量辅助**——
+   不要让 Ratio 阻碍真实吹气。
+3. **Peak Hold**（默认 0.15s）：真机仍有明显“高→低→高→低”掉分 → 略增大。
+4. **Start/Maintain/Duration/Decay**（0.28 / 0.10 / 0.28 / 0.40）：真机调。
+5. **已知边界**：浊音讲话/低音音乐低频主导，合成下 raw 偏高——依赖 VP 消音乐 + 真机调参；
+   高频噪声 raw≈0.11 高于 maintain，持续大声高频声可能慢积累，必要时调高 maintain。
 
 ## 4. 固化步骤
 
-1. 三轮回完，用 **Copy Values** 拿 10 键写回 `BlowDetectionConfiguration.swift`。
-2. 连测 3 轮。
-3. Release 自动不含 Inspector。
+1. 按 §2 验完，用 **Copy Values** 拿 11 键写回 `BlowDetectionConfiguration.swift`。
+2. 连测 3 轮。Release 自动不含 Inspector。
+3. 第二阶段仅在“VP 带通仍分不清”时上 Template Matching（见 §6），当前不加。
 
 ## 5. 验收
 
-- [ ] 音乐 100% 持续 30s → 不熄灭（AEC 生效）。
-- [ ] 讲话 → 不轻易熄灭。
-- [ ] 普通吹气 → <0.8s 稳定熄灭。
-- [ ] 轻吹 → 火焰明显响应。
-- [ ] 音乐 + 普通吹气 → 稳定熄灭。
-- [ ] 连续吹气中短暂检测掉分 → 不丢失整个过程（evidence 不归零）。
+- [ ] 音乐 100% 持续 30s → 不熄灭（VP 生效）。
+- [ ] 正常讲话 → 不轻易熄灭。
+- [ ] 普通吹气 → 0.3–0.8s 稳定熄灭。
+- [ ] 轻吹 → 火焰立即明显响应。
+- [ ] 持续吹气中偶发掉分 → 仍能正常熄灭。
 
-## 6. 第二阶段（仅在真机数据需要时）
+## 6. 第二阶段（仅在需要时）
 
 ```text
 Normalized FFT → Blow Reference Spectrum → Cosine Similarity

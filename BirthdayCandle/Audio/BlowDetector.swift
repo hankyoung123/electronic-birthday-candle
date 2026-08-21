@@ -12,6 +12,7 @@ struct BlowDebugSnapshot: Sendable {
     let windEnergyScore: Float
     let windRatioScore: Float
     let rawScore: Float
+    let heldScore: Float
     let smoothedIntensity: Float
 
     static let zero = BlowDebugSnapshot(
@@ -22,6 +23,7 @@ struct BlowDebugSnapshot: Sendable {
         windEnergyScore: 0,
         windRatioScore: 0,
         rawScore: 0,
+        heldScore: 0,
         smoothedIntensity: 0
     )
 }
@@ -85,6 +87,8 @@ final class BlowDetector: @unchecked Sendable {
     private let configuration: BlowDetectionConfiguration
     private let lock = NSLock()
     private var smoothedIntensity: Float = 0
+    private var heldPeak: Float = 0
+    private var holdRemaining: TimeInterval = 0
     #if DEBUG
     private var debugSnapshot: BlowDebugSnapshot = .zero
     #endif
@@ -139,12 +143,18 @@ final class BlowDetector: @unchecked Sendable {
             ),
             1
         )
+        let frameDuration = Double(samples.count) / sampleRate
+
+        // Peak hold: bridge brief Voice Processing dips so a real blow never
+        // drops to near-zero for a frame or two mid-effort.
+        updatePeakHold(rawScore: rawScore, dt: frameDuration, holdDuration: config.peakHoldDuration)
+        let heldScore = holdRemaining > 0 ? max(rawScore, heldPeak) : rawScore
 
         return lock.withLock {
-            let coefficient = rawScore > smoothedIntensity
+            let coefficient = heldScore > smoothedIntensity
                 ? config.attackSmoothing
                 : config.releaseSmoothing
-            smoothedIntensity += (rawScore - smoothedIntensity) * coefficient
+            smoothedIntensity += (heldScore - smoothedIntensity) * coefficient
             #if DEBUG
             debugSnapshot = BlowDebugSnapshot(
                 rms: totalRMS,
@@ -154,10 +164,22 @@ final class BlowDetector: @unchecked Sendable {
                 windEnergyScore: windEnergyScore,
                 windRatioScore: windRatioScore,
                 rawScore: rawScore,
+                heldScore: heldScore,
                 smoothedIntensity: smoothedIntensity
             )
             #endif
             return smoothedIntensity
+        }
+    }
+
+    private func updatePeakHold(rawScore: Float, dt: Double, holdDuration: TimeInterval) {
+        if rawScore >= heldPeak {
+            heldPeak = rawScore
+            holdRemaining = holdDuration
+        } else if holdRemaining > 0 {
+            holdRemaining -= dt
+        } else {
+            heldPeak = rawScore
         }
     }
 
@@ -174,6 +196,8 @@ final class BlowDetector: @unchecked Sendable {
     func reset() {
         lock.withLock {
             smoothedIntensity = 0
+            heldPeak = 0
+            holdRemaining = 0
             bandPassLowStages = []
             bandPassHighStages = []
             bandPassSampleRate = 0

@@ -83,13 +83,16 @@ final class AudioEngine {
 
     func start() async throws {
         guard AVAudioApplication.shared.recordPermission == .granted else {
+            #if DEBUG
+            lastStartDiagnostic = "Microphone permission denied"
+            #endif
             throw AudioEngineError.microphonePermissionDenied
         }
         detectionRequested = true
 
         do {
-            try configureSession()
-            try installInputTapIfNeeded()
+            // Single AEC/input path: session → voice processing → tap → engine.
+            try configureInputPath()
             if !engine.isRunning {
                 engine.prepare()
                 try engine.start()
@@ -97,14 +100,51 @@ final class AudioEngine {
         } catch let error as AudioEngineError {
             throw error
         } catch {
+            #if DEBUG
+            lastStartDiagnostic = "Audio session activation failed"
+            #endif
             throw AudioEngineError.sessionActivationFailed
         }
+        #if DEBUG
+        lastStartDiagnostic = nil
+        #endif
         startIntensityDelivery()
     }
 
-    /// Whether the audio session is configured for echo-cancelled (AEC) input.
-    var isEchoCancelledInputEnabled: Bool {
-        AVAudioSession.sharedInstance().isEchoCancelledInputEnabled
+    /// Whether Voice Processing (system AEC) is active on the mic input.
+    var isVoiceProcessingEnabled: Bool {
+        engine.inputNode.isVoiceProcessingEnabled
+    }
+
+    /// Human-readable reason for the last start failure (Debug only).
+    #if DEBUG
+    private(set) var lastStartDiagnostic: String?
+    #endif
+
+    /// Uniform input-path setup shared by first start, interruption recovery and
+    /// route changes: activate the session, enable Voice Processing (the only
+    /// AEC path), then install the mic tap on the voice-processed input.
+    private func configureInputPath() throws {
+        try configureSession()
+        try enableVoiceProcessing()
+        try installInputTapIfNeeded()
+    }
+
+    private func enableVoiceProcessing() throws {
+        do {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+        } catch {
+            #if DEBUG
+            lastStartDiagnostic = "Voice Processing initialization failed"
+            #endif
+            throw AudioEngineError.sessionActivationFailed
+        }
+        // Enabling voice processing can change the input node's format; the tap
+        // (re)installed afterwards runs on the voice-processed input.
+        if inputTapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            inputTapInstalled = false
+        }
     }
 
     func stop() {
@@ -115,6 +155,9 @@ final class AudioEngine {
         engine.stop()
         blowDetector.reset()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #if DEBUG
+        audioSessionActive = false
+        #endif
     }
 
     func stopBlowDetection() {
@@ -273,22 +316,34 @@ final class AudioEngine {
             mode: .default,
             options: [.defaultToSpeaker]
         )
-        // Echo-cancelled input is the single AEC path: the system removes our
-        // own speaker playback from the mic. Must be applied via the shared
-        // session-config path so first start, interruption recovery and route
-        // changes all behave identically.
-        try session.setPrefersEchoCancelledInput(true)
-        try session.setActive(true)
-        // The preference is a hint on most hardware; verify it actually took.
-        // If the hardware cannot honour it, treat startup as failed — we never
-        // run a non-cancelled detection path.
-        guard session.isEchoCancelledInputEnabled else {
-            throw AudioEngineError.sessionActivationFailed
+        #if DEBUG
+        do {
+            try session.setActive(true)
+            audioSessionActive = true
+        } catch {
+            lastStartDiagnostic = "Audio session activation failed"
+            throw error
         }
+        #else
+        try session.setActive(true)
+        #endif
         preferBuiltInMicrophone(on: session)
         try session.overrideOutputAudioPort(.speaker)
         updateCurrentInputDescription(from: session)
     }
+
+    /// Current session context for the Debug panel.
+    #if DEBUG
+    private(set) var audioSessionActive = false
+
+    var debugMicrophonePermissionGranted: Bool {
+        AVAudioApplication.shared.recordPermission == .granted
+    }
+
+    var debugAudioSessionActive: Bool {
+        audioSessionActive
+    }
+    #endif
 
     private func preferBuiltInMicrophone(on session: AVAudioSession) {
         guard let builtInMicrophone = session.availableInputs?.first(where: {
@@ -424,8 +479,7 @@ final class AudioEngine {
                 return
             }
             do {
-                try configureSession()
-                try installInputTapIfNeeded()
+                try configureInputPath()
                 try engine.start()
                 if wasMusicPlayingBeforeInterruption { musicPlayer.play() }
             } catch {
@@ -449,8 +503,7 @@ final class AudioEngine {
         }
         engine.stop()
         do {
-            try configureSession()
-            try installInputTapIfNeeded()
+            try configureInputPath()
             engine.prepare()
             try engine.start()
             if shouldResumeMusic { musicPlayer.play() }

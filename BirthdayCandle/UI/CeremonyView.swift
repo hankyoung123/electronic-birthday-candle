@@ -124,7 +124,12 @@ private struct BlowInspector: View {
 
                 metric("Input Route", session.debugInputDescription)
                 metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
-                metric("Echo Cancelled", session.debugEchoCancelledInputEnabled ? "On" : "Off")
+                if let diagnostic = session.debugLastStartDiagnostic {
+                    metric("Start Failure", diagnostic)
+                }
+                metric("Voice Processing", session.debugVoiceProcessingEnabled ? "On" : "Off")
+                metric("Mic Permission", session.debugMicrophonePermissionGranted ? "Granted" : "Denied")
+                metric("Session Active", session.debugAudioSessionActive ? "Yes" : "No")
                 metric("RMS / dBFS", "\(formatted(snapshot.rms)) / \(String(format: "%.1f dB", snapshot.dbFS))")
 
                 HStack {
@@ -141,6 +146,7 @@ private struct BlowInspector: View {
                 metric("Wind Energy Score", formatted(snapshot.windEnergyScore))
                 metric("Wind Ratio Score", formatted(snapshot.windRatioScore))
                 metric("Raw Score", formatted(snapshot.rawScore))
+                metric("Held Score", formatted(snapshot.heldScore))
                 progressRow("Smoothed", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
 
                 progressRow(
@@ -164,6 +170,7 @@ private struct BlowInspector: View {
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.orange.opacity(0.9))
 
+                sliderRow("Peak Hold", value: Binding(get: { session.debugPeakHoldDuration }, set: { session.setDebugPeakHoldDuration($0) }), in: 0...0.5, step: 0.01, format: "%.2f s")
                 sliderRow("Wind Start", value: Binding(get: { Double(session.debugWindStart) }, set: { session.setDebugWindStart(Float($0)) }), in: 0.005...0.5, step: 0.005, format: "%.3f")
                 sliderRow("Wind Full", value: Binding(get: { Double(session.debugWindFull) }, set: { session.setDebugWindFull(Float($0)) }), in: 0.01...0.5, step: 0.005, format: "%.3f")
                 sliderRow("Wind Ratio Start", value: Binding(get: { Double(session.debugWindRatioStart) }, set: { session.setDebugWindRatioStart(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
@@ -252,7 +259,7 @@ private struct BlowInspector: View {
         return """
         Input: \(session.debugInputDescription)
         SampleRate: \(Int(session.debugInputSampleRate.rounded()))
-        EchoCancelled: \(session.debugEchoCancelledInputEnabled ? "On" : "Off")
+        VoiceProcessing: \(session.debugVoiceProcessingEnabled ? "On" : "Off")
         dBFS: \(String(format: "%.1f", s.dbFS))
 
         WindRMS: \(String(format: "%.3f", s.windBandRMS))
@@ -261,6 +268,7 @@ private struct BlowInspector: View {
         WindEnergy: \(String(format: "%.2f", s.windEnergyScore))
         WindRatioScore: \(String(format: "%.2f", s.windRatioScore))
         Raw: \(String(format: "%.2f", s.rawScore))
+        Held: \(String(format: "%.2f", s.heldScore))
         Smoothed: \(String(format: "%.2f", s.smoothedIntensity))
         """
     }

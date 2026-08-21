@@ -198,7 +198,7 @@ final class CeremonySession {
         if blowIntensity >= parameters.strongBlowThreshold {
             blowEvidence += elapsed
         } else if blowIntensity >= parameters.strongBlowMaintainThreshold {
-            blowEvidence += elapsed * 0.65
+            blowEvidence += elapsed * 0.60
         } else {
             blowEvidence = max(0, blowEvidence - elapsed * parameters.strongBlowDecayRate)
         }
@@ -263,8 +263,28 @@ final class CeremonySession {
         audioEngine?.currentBlowDebugSnapshot ?? .zero
     }
 
-    var debugEchoCancelledInputEnabled: Bool {
-        audioEngine?.isEchoCancelledInputEnabled ?? false
+    var debugVoiceProcessingEnabled: Bool {
+        audioEngine?.isVoiceProcessingEnabled ?? false
+    }
+
+    var debugMicrophonePermissionGranted: Bool {
+        audioEngine?.debugMicrophonePermissionGranted ?? false
+    }
+
+    var debugAudioSessionActive: Bool {
+        audioEngine?.debugAudioSessionActive ?? false
+    }
+
+    var debugLastStartDiagnostic: String? {
+        audioEngine?.lastStartDiagnostic
+    }
+
+    var debugPeakHoldDuration: TimeInterval {
+        blowConfiguration.peakHoldDuration
+    }
+
+    func setDebugPeakHoldDuration(_ value: Double) {
+        blowConfiguration.peakHoldDuration = max(0, min(value, 1))
     }
 
     var debugSpectrumRollingSummary: SpectrumRollingSummary {

@@ -88,8 +88,34 @@ final class BlowDetectorTests: XCTestCase {
         impulse.withUnsafeBufferPointer { b in
             _ = detector.analyze(samples: b, sampleRate: sampleRate)
         }
-        _ = feed([Float](repeating: 0, count: frameCount), detector: detector, count: 6)
+        _ = feed([Float](repeating: 0, count: frameCount), detector: detector, count: 25)
         XCTAssertLessThan(detector.currentIntensity, 0.20)
+    }
+
+    /// A brief mid-blow dip (a Voice Processing blip) must not interrupt the
+    /// effort: the peak is held, so the effective score stays high.
+    func testPeakHoldBridgesShortDrop() {
+        let detector = BlowDetector()
+        let wind = windLikeSignal(amplitude: 0.16)
+        _ = feed(wind, detector: detector, count: 10)
+        let steady = detector.currentIntensity
+
+        // Two near-silence frames mid-blow (~46 ms, well inside the 150 ms hold).
+        _ = feed([Float](repeating: 0, count: frameCount), detector: detector, count: 2)
+        let duringDip = detector.currentIntensity
+
+        XCTAssertGreaterThan(duringDip, steady * 0.85) // held, not collapsed
+    }
+
+    /// Once the hold window passes with no new energy, the held peak releases
+    /// and the intensity decays back down.
+    func testPeakHoldEventuallyReleases() {
+        let detector = BlowDetector()
+        let wind = windLikeSignal(amplitude: 0.16)
+        _ = feed(wind, detector: detector, count: 8)
+        _ = feed([Float](repeating: 0, count: frameCount), detector: detector, count: 45)
+
+        XCTAssertLessThan(detector.currentIntensity, 0.10)
     }
 
     func testDbFSForHalfScaleSineIsAboutMinusNine() {

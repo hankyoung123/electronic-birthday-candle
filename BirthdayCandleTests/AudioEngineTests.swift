@@ -21,11 +21,11 @@ final class AudioEngineTests: XCTestCase {
         )
     }
 
-    /// The audio session must be configured for echo-cancelled (AEC) input once
-    /// detection has started. Needs a physical device + mic permission.
-    func testEchoCancelledInputConfigured() async throws {
+    /// Voice Processing (the single AEC path) must be enabled on the mic input
+    /// before detection taps it. Needs a physical device + mic permission.
+    func testVoiceProcessingEnabledBeforeTap() async throws {
         #if targetEnvironment(simulator)
-        throw XCTSkip("Echo-cancelled input requires a physical device.")
+        throw XCTSkip("Voice processing requires a physical device.")
         #else
         let engine = AudioEngine()
         do {
@@ -35,7 +35,7 @@ final class AudioEngineTests: XCTestCase {
         } catch {
             throw error
         }
-        XCTAssertTrue(engine.isEchoCancelledInputEnabled)
+        XCTAssertTrue(engine.isVoiceProcessingEnabled)
         engine.stop()
         #endif
     }

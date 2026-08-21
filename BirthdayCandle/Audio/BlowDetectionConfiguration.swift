@@ -29,26 +29,30 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
     private var _referenceBandUpperHz: Double = 5_000
 
     // Wind-energy score normalization (band-passed 80–500 Hz RMS units).
-    private var _windStart: Float = 0.015
-    private var _windFull: Float = 0.065
+    private var _windStart: Float = 0.012
+    private var _windFull: Float = 0.055
 
     // Wind-ratio score normalization (fraction of 80–5000 Hz energy below 500 Hz).
     private var _windRatioStart: Float = 0.35
     private var _windRatioFull: Float = 0.65
 
     // Additive final-score weights (sum ≈ 1).
-    private var _energyWeight: Float = 0.85
-    private var _ratioWeight: Float = 0.15
+    private var _energyWeight: Float = 0.90
+    private var _ratioWeight: Float = 0.10
 
-    // Attack / release smoothing of the final score.
+    // Attack / release smoothing of the held score.
     private var _attackSmoothing: Float = 0.28
     private var _releaseSmoothing: Float = 0.10
 
-    // Temporal evidence accumulator (CeremonySession).
-    private var _strongBlowThreshold: Float = 0.30
-    private var _strongBlowMaintainThreshold: Float = 0.12
-    private var _strongBlowDecayRate: Double = 0.35
-    private var _requiredStrongBlowDuration: TimeInterval = 0.30
+    /// How long a recent raw-score peak is held so a brief Voice Processing
+    /// dip mid-blow does not interrupt the effort (seconds).
+    private var _peakHoldDuration: TimeInterval = 0.15
+
+    // Temporal evidence accumulator (CeremonySession) — tolerant of blips.
+    private var _strongBlowThreshold: Float = 0.28
+    private var _strongBlowMaintainThreshold: Float = 0.10
+    private var _strongBlowDecayRate: Double = 0.40
+    private var _requiredStrongBlowDuration: TimeInterval = 0.28
 
     init() {}
 
@@ -97,6 +101,11 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
         set { lock.withLock { _ratioWeight = newValue } }
     }
 
+    var peakHoldDuration: TimeInterval {
+        get { lock.withLock { _peakHoldDuration } }
+        set { lock.withLock { _peakHoldDuration = newValue } }
+    }
+
     var attackSmoothing: Float {
         get { lock.withLock { _attackSmoothing } }
         set { lock.withLock { _attackSmoothing = newValue } }
@@ -139,6 +148,7 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
                 windRatioFull: _windRatioFull,
                 energyWeight: _energyWeight,
                 ratioWeight: _ratioWeight,
+                peakHoldDuration: _peakHoldDuration,
                 attackSmoothing: _attackSmoothing,
                 releaseSmoothing: _releaseSmoothing,
                 strongBlowThreshold: _strongBlowThreshold,
@@ -163,6 +173,7 @@ struct BlowDetectionParameters: Sendable {
     let windRatioFull: Float
     let energyWeight: Float
     let ratioWeight: Float
+    let peakHoldDuration: TimeInterval
     let attackSmoothing: Float
     let releaseSmoothing: Float
     let strongBlowThreshold: Float

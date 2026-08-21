@@ -120,7 +120,7 @@ final class CeremonySessionTests: XCTestCase {
     }
 
     /// A short sub-maintain dip mid-blow must not erase earned evidence.
-    func testShortDropDoesNotResetEvidence() async {
+    func testShortDropDoesNotLoseEvidence() async {
         let session = CeremonySession()
         session.lightCandle()
         try? await Task.sleep(for: .milliseconds(2000))
