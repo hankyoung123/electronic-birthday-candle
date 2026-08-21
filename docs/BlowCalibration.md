@@ -1,103 +1,63 @@
-# 真机校准手册（Voice Processing AEC + 带通风噪 + Peak Hold + 时间证据）
+# P1 真机验证手册（Apple Sound Analysis）
 
-> 目标：真机确认 Voice Processing 消掉自家音乐，并校准 80–500 Hz 带通风噪、
-> Peak Hold 与证据累计的最终参数。只针对真机（Debug 构建），Release 无可调入口。
-
-## 0. 当前检测链路（唯一生产路径）
+## 当前生产链路
 
 ```text
-AVAudioSession（.playAndRecord + .default + .defaultToSpeaker）
-→ AVAudioEngine Voice Processing / AEC（setVoiceProcessingEnabled）
-→ 80–500 Hz Direct Band-pass RMS（6 阶，时间域）
-→ Wind Ratio（FFT：80–500 / 80–5000）
-→ Blow Score = WindEnergy×0.90 + Ratio×0.10
-→ Peak Hold（150ms）
-→ attack/release smoothing
-→ 连续 0…1 intensity（驱动火焰）
-→ Evidence Accumulator（CeremonySession）→ Extinguish
+AVAudioSession（playAndRecord + speaker）
+→ AVAudioEngine Voice Processing / AEC
+→ 唯一一个 input tap
+   ├─ BlowDetector：80–500 Hz 带通 RMS → 火焰动画强度
+   └─ SoundClassifier：Apple 内置声音分类 → 吹气置信度 → 熄灭
 ```
 
-- **AEC**：Voice Processing 是唯一 AEC 路径（Echo-Cancelled Input 已撤销——iPhone 15
-  Pro Max 上 `isEchoCancelledInputEnabled` 强制校验会直接启动失败）。
-  统一 `configureInputPath()` = `configureSession → enableVoiceProcessing → installTap`，
-  首次启动/中断恢复/Route Change 全走同一顺序；VP 启用失败 → 启动失败（无第二条 AEC 路径）。
-- **Wind Detector／Evidence 继续保留**：不恢复 Adaptive Baseline / Delta / Broadband /
-  多频段评分 / silenceFloor 硬门槛。
-
-### 证据累计（CeremonySession）
+`SoundClassifier` 使用 `SNClassifySoundRequest(classifierIdentifier: .version1)`，
+分析窗口为 0.5 秒、重叠率为 0.8。吹气置信度公式固定为：
 
 ```text
-intensity ≥ start(0.28)           → evidence += 1.0 × dt
-intensity ≥ maintain(0.10)        → evidence += 0.60 × dt
-否则                              → evidence = max(0, evidence − 0.40 × dt)
-evidence ≥ required(0.28s)        → extinguish()
+airflow = max(wind_noise_microphone, breathing × 0.7)
+blowConfidence = clamp(airflow × (1 − speech), 0...1)
 ```
 
-### Peak Hold（BlowDetector，150ms）
+音乐置信度仅显示，不参与扣分。`BlowDetector` 不判断声音语义，也不能触发熄灭。
 
-```text
-if rawScore >= heldPeak            { heldPeak = rawScore; holdRemaining = 0.15s }
-else if holdRemaining > 0          { holdRemaining -= dt }
-else                               { heldPeak = rawScore }
-有效的 score = hold 内 max(rawScore, heldPeak)，再进 attack/release 平滑
-```
+## 熄灭策略
 
-目标：真实吹气出现 `0.65 / 0.58 / 0.09(VP 短暂压制) / 0.54 / 0.61` 时，有效强度保持连续。
+生产参数只有三个：
 
-## 1. Debug Panel
+| 参数 | 默认值 | 含义 |
+| --- | ---: | --- |
+| Confidence Threshold | 0.55 | 高于该值时累计证据 |
+| Required Duration | 0.25 s | 累计达到该时长后熄灭 |
+| Decay Rate | 1.5× | 低于阈值时证据衰减速度 |
 
-- `Voice Processing: On/Off`；`Mic Permission`；`Session Active`；`Start Failure`（DEBUG，例如
-  `Voice Processing initialization failed`）
-- `Input Route` / `Sample Rate`
-- `Total RMS / dBFS`、`Wind RMS`、`Wind Ratio`
-- `Wind Energy Score`、`Wind Ratio Score`、`Raw Score`、`Held Score`、`Smoothed Score`
-- `Evidence` / `Required Evidence`；`Music Volume`
-- **Live Tuning**：`Peak Hold`、`Wind Start/Full`、`Energy/Ratio Wt`、`Start/Maintain/Duration/Decay`、`Music Volume`
-- **Copy Values** 11 键；**Copy Snapshot / Copy 3s Avg**
+这些值在 Debug Inspector 中只读显示。避免一边采样一边随意调参；先完成固定场景矩阵，
+再基于误触发和漏触发数据决定是否修改默认值。
 
-## 2. 真机验证（顺序）
+## 固定真机场景矩阵
+
+每个场景至少重复 3 次，记录 Inspector 的 Top 5、四个目标置信度、吹气置信度和结果。
 
 | # | 场景 | 期望 |
 | --- | --- | --- |
-| 1 | 无音乐 + 普通吹气 | 0.3–0.8s 熄灭 |
-| 2 | 无音乐 + 轻吹 | 火焰立即明显响应 |
-| 3 | 正常讲话 | 不轻易熄灭 |
-| 4–6 | 音乐 30 / 70 / 100% | Raw 不明显增加（VP 生效） |
-| 7–8 | 音乐 70/100% + 普通吹气 | 可靠熄灭 |
+| 1 | 安静环境，普通吹气 | 稳定熄灭 |
+| 2 | 安静环境，轻吹 | 火焰立即响应；分类达到阈值时熄灭 |
+| 3 | 安静环境，正常讲话 | 不熄灭 |
+| 4 | 安静环境，持续元音 | 不熄灭 |
+| 5 | 安静环境，拍手/敲击 | 不熄灭 |
+| 6 | 生日音乐 30%，不吹气 | 不熄灭 |
+| 7 | 生日音乐 70%，不吹气 | 不熄灭 |
+| 8 | 生日音乐 100%，不吹气 | 不熄灭 |
+| 9 | 生日音乐 70%，普通吹气 | 稳定熄灭 |
+| 10 | 生日音乐 100%，普通吹气 | 稳定熄灭 |
 
-另重点：持续吹气中偶发掉分（VP 瞬时压制）→ 仍能正常熄灭（Peak Hold + 证据容忍）。
+## 验收记录
 
-若音乐音量增大而 Raw 显著上升 → 先查 `Voice Processing: On`、输入输出同一 engine。
+- [ ] Debug 真机显示 Voice Processing 为 On，且没有 classifier error。
+- [ ] 只有吹气分类置信度能改变 Evidence；Visual Intensity 单独变化不会熄灭。
+- [ ] 讲话场景的 speech 抑制能让吹气置信度保持低于 0.55。
+- [ ] 音乐本身不会累计 Evidence，伴随音乐的吹气仍可识别。
+- [ ] Debug / Release 的模拟器与真机构建均通过。
 
-## 3. 定参规则
-
-1. **Wind Start/Full**（默认 0.012 / 0.055，带通后 RMS 量纲）：轻吹响应不足 → 调低 Start；
-   讲话/底噪误触发 → 调高。
-2. **Energy/Ratio Wt**（0.90 / 0.10）：**Wind Energy 主特征、Ratio 仅轻量辅助**——
-   不要让 Ratio 阻碍真实吹气。
-3. **Peak Hold**（默认 0.15s）：真机仍有明显“高→低→高→低”掉分 → 略增大。
-4. **Start/Maintain/Duration/Decay**（0.28 / 0.10 / 0.28 / 0.40）：真机调。
-5. **已知边界**：浊音讲话/低音音乐低频主导，合成下 raw 偏高——依赖 VP 消音乐 + 真机调参；
-   高频噪声 raw≈0.11 高于 maintain，持续大声高频声可能慢积累，必要时调高 maintain。
-
-## 4. 固化步骤
-
-1. 按 §2 验完，用 **Copy Values** 拿 11 键写回 `BlowDetectionConfiguration.swift`。
-2. 连测 3 轮。Release 自动不含 Inspector。
-3. 第二阶段仅在“VP 带通仍分不清”时上 Template Matching（见 §6），当前不加。
-
-## 5. 验收
-
-- [ ] 音乐 100% 持续 30s → 不熄灭（VP 生效）。
-- [ ] 正常讲话 → 不轻易熄灭。
-- [ ] 普通吹气 → 0.3–0.8s 稳定熄灭。
-- [ ] 轻吹 → 火焰立即明显响应。
-- [ ] 持续吹气中偶发掉分 → 仍能正常熄灭。
-
-## 6. 第二阶段（仅在需要时）
-
-```text
-Normalized FFT → Blow Reference Spectrum → Cosine Similarity
-rawScore = windEnergy×0.60 + windRatio×0.20 + templateSimilarity×0.20
-```
-不直接上 MFCC / ML。
+P1 是根据用户明确指示在完成完整真机数据矩阵前启用的。因此代码和自动化测试通过后，
+Apple 内置分类模型在目标设备与实际环境中的准确率仍必须用上述矩阵验证；单元测试只验证
+置信度组合公式与时间状态机，不声称验证 Apple 模型准确率。

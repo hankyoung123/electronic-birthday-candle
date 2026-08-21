@@ -42,6 +42,7 @@ private final class AudioConversionInput: @unchecked Sendable {
 @MainActor
 final class AudioEngine {
     var onBlowIntensity: (@MainActor @Sendable (Float) -> Void)?
+    var onBlowConfidence: (@MainActor @Sendable (Double) -> Void)?
     var onFailure: (@MainActor @Sendable (AudioEngineError) -> Void)?
 
     #if DEBUG
@@ -52,6 +53,14 @@ final class AudioEngine {
         blowDetector.currentDebugSnapshot
     }
 
+    var currentSoundClassificationSnapshot: SoundClassificationSnapshot {
+        soundClassifier.currentSnapshot
+    }
+
+    var soundClassificationDiagnostic: String? {
+        soundClassifier.lastErrorDescription
+    }
+
     var currentMusicVolume: Float { musicPlayer.volume }
     #endif
 
@@ -59,9 +68,10 @@ final class AudioEngine {
     private let musicPlayer = AVAudioPlayerNode()
     private let effectPlayer = AVAudioPlayerNode()
     private let blowDetector: BlowDetector
+    private let soundClassifier = SoundClassifier()
     private var inputTapInstalled = false
     private var detectionRequested = false
-    private var intensityDeliveryTask: Task<Void, Never>?
+    private var detectionDeliveryTask: Task<Void, Never>?
     private var musicFadeTask: Task<Void, Never>?
     private var notificationTokens: [NSObjectProtocol] = []
     private var wasMusicPlayingBeforeInterruption = false
@@ -108,7 +118,7 @@ final class AudioEngine {
         #if DEBUG
         lastStartDiagnostic = nil
         #endif
-        startIntensityDelivery()
+        startDetectionDelivery()
     }
 
     /// Whether Voice Processing (system AEC) is active on the mic input.
@@ -131,6 +141,13 @@ final class AudioEngine {
     }
 
     private func enableVoiceProcessing() throws {
+        #if targetEnvironment(simulator)
+        // Simulator I/O has no physical voice-processing route. Calling
+        // setVoiceProcessingEnabled can raise an Objective-C exception before
+        // Swift can catch it, so simulator verification uses the normal input
+        // node. Physical devices always keep the Voice Processing / AEC path.
+        return
+        #else
         do {
             try engine.inputNode.setVoiceProcessingEnabled(true)
         } catch {
@@ -144,7 +161,9 @@ final class AudioEngine {
         if inputTapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
+            soundClassifier.stop()
         }
+        #endif
     }
 
     func stop() {
@@ -162,12 +181,13 @@ final class AudioEngine {
 
     func stopBlowDetection() {
         detectionRequested = false
-        intensityDeliveryTask?.cancel()
-        intensityDeliveryTask = nil
+        detectionDeliveryTask?.cancel()
+        detectionDeliveryTask = nil
         if inputTapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
         }
+        soundClassifier.stop()
         blowDetector.reset()
     }
 
@@ -387,6 +407,7 @@ final class AudioEngine {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw AudioEngineError.microphoneUnavailable
         }
+        try soundClassifier.start(format: format)
         #if DEBUG
         currentInputSampleRate = format.sampleRate
         #endif
@@ -397,6 +418,7 @@ final class AudioEngine {
             format: format,
             block: Self.makeInputTap(
                 detector: blowDetector,
+                classifier: soundClassifier,
                 sampleRate: format.sampleRate
             )
         )
@@ -405,6 +427,7 @@ final class AudioEngine {
 
     nonisolated private static func makeInputTap(
         detector: BlowDetector,
+        classifier: SoundClassifier,
         sampleRate: Double
     ) -> AVAudioNodeTapBlock {
         { @Sendable buffer, _ in
@@ -414,15 +437,17 @@ final class AudioEngine {
 
             let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
             detector.analyze(samples: samples, sampleRate: sampleRate)
+            classifier.analyze(buffer)
         }
     }
 
-    private func startIntensityDelivery() {
-        guard intensityDeliveryTask == nil else { return }
-        intensityDeliveryTask = Task { [weak self] in
+    private func startDetectionDelivery() {
+        guard detectionDeliveryTask == nil else { return }
+        detectionDeliveryTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 self.onBlowIntensity?(self.blowDetector.currentIntensity)
+                self.onBlowConfidence?(self.soundClassifier.currentSnapshot.blowConfidence)
                 try? await Task.sleep(for: .milliseconds(33))
             }
         }
@@ -500,6 +525,7 @@ final class AudioEngine {
         if inputTapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
+            soundClassifier.stop()
         }
         engine.stop()
         do {
