@@ -169,6 +169,44 @@ final class CeremonySessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .extinguishing)
     }
 
+    func testThreeSecondHistoryStaysBounded() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        // Simulate ~10 s of ticks at 30 Hz. Values are sub-start (0.35 < 0.45)
+        // so the candle never extinguishes and every tick is recorded. The
+        // rolling window must settle near N ≈ 90 and never keep growing.
+        for index in 0..<300 {
+            session.receiveBlowIntensity(0.35, at: 1.0 + Double(index) / 30.0)
+        }
+        let summary = session.debugSpectrumRollingSummary
+
+        XCTAssertGreaterThanOrEqual(summary.sampleCount, 80)
+        XCTAssertLessThanOrEqual(summary.sampleCount, 100)
+    }
+
+    func testOldPeakDisappearsAfterThreeSeconds() async {
+        let session = CeremonySession()
+        session.lightCandle()
+        try? await Task.sleep(for: .milliseconds(600))
+
+        // Loud (but sub-start) phase for ~1 s at 20 Hz.
+        for index in 0..<20 {
+            session.receiveBlowIntensity(0.42, at: 1.0 + Double(index) * 0.05)
+        }
+        // While the loud frames are still inside the window, the peak shows it.
+        XCTAssertGreaterThanOrEqual(session.debugSpectrumRollingSummary.blowScorePeak, 0.40)
+
+        // Quiet for well over 3 s — the old peak must fall out of the window.
+        for index in 0..<70 {
+            session.receiveBlowIntensity(0.05, at: 2.0 + Double(index) * 0.05)
+        }
+        let summary = session.debugSpectrumRollingSummary
+        XCTAssertLessThan(summary.blowScorePeak, 0.10)
+        XCTAssertLessThanOrEqual(summary.sampleCount, 100)
+    }
+
     func testExtinguishingCompletesInsideCollapseWindow() async {
         XCTAssertTrue((0.15...0.25).contains(CeremonyTiming.extinguishingDuration))
 

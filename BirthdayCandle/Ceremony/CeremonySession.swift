@@ -33,14 +33,14 @@ struct SpectrumRollingSummary: Sendable {
     let sampleCount: Int
     let dbFSAverage: Float
     let dbFSPeak: Float
-    let lowEnergyAverage: Float
-    let lowEnergyPeak: Float
-    let midEnergyAverage: Float
-    let midEnergyPeak: Float
-    let upperEnergyAverage: Float
-    let upperEnergyPeak: Float
-    let highEnergyAverage: Float
-    let highEnergyPeak: Float
+    let lowRatioAverage: Float
+    let lowRatioPeak: Float
+    let midRatioAverage: Float
+    let midRatioPeak: Float
+    let upperRatioAverage: Float
+    let upperRatioPeak: Float
+    let highRatioAverage: Float
+    let highRatioPeak: Float
     let energyScoreAverage: Float
     let energyScorePeak: Float
     let broadbandAverage: Float
@@ -53,14 +53,14 @@ struct SpectrumRollingSummary: Sendable {
         sampleCount: 0,
         dbFSAverage: -120,
         dbFSPeak: -120,
-        lowEnergyAverage: 0,
-        lowEnergyPeak: 0,
-        midEnergyAverage: 0,
-        midEnergyPeak: 0,
-        upperEnergyAverage: 0,
-        upperEnergyPeak: 0,
-        highEnergyAverage: 0,
-        highEnergyPeak: 0,
+        lowRatioAverage: 0,
+        lowRatioPeak: 0,
+        midRatioAverage: 0,
+        midRatioPeak: 0,
+        upperRatioAverage: 0,
+        upperRatioPeak: 0,
+        highRatioAverage: 0,
+        highRatioPeak: 0,
         energyScoreAverage: 0,
         energyScorePeak: 0,
         broadbandAverage: 0,
@@ -282,7 +282,7 @@ final class CeremonySession {
     var debugSpectrumRollingSummary: SpectrumRollingSummary {
         guard !spectrumHistory.isEmpty else { return .empty }
         var count = 0
-        var dbSum: Float = 0
+        var rmsSquaredSum: Float = 0
         var dbPeak: Float = -120
         var lowSum: Float = 0
         var lowPeak: Float = 0
@@ -303,16 +303,18 @@ final class CeremonySession {
         for entry in spectrumHistory {
             count += 1
             let snapshot = entry.snapshot
-            dbSum += snapshot.dbFS
+            // Average in the linear power domain, then convert back to dB —
+            // averaging dBFS directly would bias toward the quietest frames.
+            rmsSquaredSum += snapshot.rms * snapshot.rms
             dbPeak = max(dbPeak, snapshot.dbFS)
-            lowSum += snapshot.lowEnergy
-            lowPeak = max(lowPeak, snapshot.lowEnergy)
-            midSum += snapshot.midEnergy
-            midPeak = max(midPeak, snapshot.midEnergy)
-            upperSum += snapshot.upperEnergy
-            upperPeak = max(upperPeak, snapshot.upperEnergy)
-            highSum += snapshot.highEnergy
-            highPeak = max(highPeak, snapshot.highEnergy)
+            lowSum += snapshot.lowRatio
+            lowPeak = max(lowPeak, snapshot.lowRatio)
+            midSum += snapshot.midRatio
+            midPeak = max(midPeak, snapshot.midRatio)
+            upperSum += snapshot.upperRatio
+            upperPeak = max(upperPeak, snapshot.upperRatio)
+            highSum += snapshot.highRatio
+            highPeak = max(highPeak, snapshot.highRatio)
             energySum += snapshot.energyScore
             energyPeak = max(energyPeak, snapshot.energyScore)
             broadbandSum += snapshot.broadbandScore
@@ -323,18 +325,20 @@ final class CeremonySession {
         }
 
         let total = Float(count)
+        let meanRmsSquared = rmsSquaredSum / total
+        let meanDbFS = meanRmsSquared > 0 ? 10 * log10(meanRmsSquared) : -120
         return SpectrumRollingSummary(
             sampleCount: count,
-            dbFSAverage: dbSum / total,
+            dbFSAverage: meanDbFS,
             dbFSPeak: dbPeak,
-            lowEnergyAverage: lowSum / total,
-            lowEnergyPeak: lowPeak,
-            midEnergyAverage: midSum / total,
-            midEnergyPeak: midPeak,
-            upperEnergyAverage: upperSum / total,
-            upperEnergyPeak: upperPeak,
-            highEnergyAverage: highSum / total,
-            highEnergyPeak: highPeak,
+            lowRatioAverage: lowSum / total,
+            lowRatioPeak: lowPeak,
+            midRatioAverage: midSum / total,
+            midRatioPeak: midPeak,
+            upperRatioAverage: upperSum / total,
+            upperRatioPeak: upperPeak,
+            highRatioAverage: highSum / total,
+            highRatioPeak: highPeak,
             energyScoreAverage: energySum / total,
             energyScorePeak: energyPeak,
             broadbandAverage: broadbandSum / total,
@@ -355,10 +359,11 @@ final class CeremonySession {
                 blowScore: blowIntensity
             )
         )
+        // Drop everything older than the window. Entries are appended in
+        // chronological order, but the first stale entry may be index 0, so
+        // remove-by-predicate is the correct (and complete) trim.
         let cutoff = uptime - 3.0
-        if let firstStale = spectrumHistory.firstIndex(where: { $0.uptime < cutoff }) {
-            spectrumHistory.removeFirst(firstStale)
-        }
+        spectrumHistory.removeAll { $0.uptime < cutoff }
     }
 
     var debugStrongBlowDuration: TimeInterval { strongBlowDuration }
@@ -387,6 +392,18 @@ final class CeremonySession {
         blowConfiguration.broadbandScoreWeight
     }
 
+    var debugBroadbandRelativeThreshold: Float {
+        blowConfiguration.broadbandRelativeThreshold
+    }
+
+    var debugBroadbandActiveMinProportion: Float {
+        blowConfiguration.broadbandActiveMinProportion
+    }
+
+    var debugBroadbandActiveFullProportion: Float {
+        blowConfiguration.broadbandActiveFullProportion
+    }
+
     var debugMusicVolume: Float {
         audioEngine?.currentMusicVolume ?? 0
     }
@@ -413,6 +430,18 @@ final class CeremonySession {
 
     func setDebugBroadbandScoreWeight(_ value: Float) {
         blowConfiguration.broadbandScoreWeight = min(max(value, 0), 1)
+    }
+
+    func setDebugBroadbandRelativeThreshold(_ value: Float) {
+        blowConfiguration.broadbandRelativeThreshold = min(max(value, 0), 1)
+    }
+
+    func setDebugBroadbandActiveMinProportion(_ value: Float) {
+        blowConfiguration.broadbandActiveMinProportion = min(max(value, 0), 1)
+    }
+
+    func setDebugBroadbandActiveFullProportion(_ value: Float) {
+        blowConfiguration.broadbandActiveFullProportion = min(max(value, 0), 1)
     }
 
     func setDebugMusicVolume(_ volume: Float) {

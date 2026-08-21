@@ -138,27 +138,25 @@ private struct BlowInspector: View {
                     copyButton("Copy 3s Avg", copiedLabel: "3s Avg ✓", text: rollingText)
                 }
 
-                let maxBand = max(
-                    snapshot.lowEnergy,
-                    max(snapshot.midEnergy, max(snapshot.upperEnergy, snapshot.highEnergy))
-                )
-                energyRow("Low 80–300", energy: snapshot.lowEnergy, maxEnergy: maxBand)
-                energyRow("Mid 300–800", energy: snapshot.midEnergy, maxEnergy: maxBand)
-                energyRow("Up 800–2k", energy: snapshot.upperEnergy, maxEnergy: maxBand)
-                energyRow("High 2k–5k", energy: snapshot.highEnergy, maxEnergy: maxBand)
+                ratioRow("Low 80–300", ratio: snapshot.lowRatio)
+                ratioRow("Mid 300–800", ratio: snapshot.midRatio)
+                ratioRow("Up 800–2k", ratio: snapshot.upperRatio)
+                ratioRow("High 2k–5k", ratio: snapshot.highRatio)
 
-                metric("Wind Energy", formatted(snapshot.windEnergy))
-                metric("Energy Score", formatted(snapshot.energyScore))
                 progressRow(
-                    "Broadband",
-                    value: Double(snapshot.broadbandScore),
-                    detail: "\(Int((snapshot.broadbandScore * 100).rounded()))%"
+                    "Broadband Act",
+                    value: Double(snapshot.broadbandActiveProportion),
+                    detail: "\(Int((snapshot.broadbandActiveProportion * 100).rounded()))%"
                 )
+                metric("Broadband Score", formatted(snapshot.broadbandScore))
+                metric("Energy Score", formatted(snapshot.energyScore))
+                metric("Raw Score", formatted(snapshot.rawScore))
+                progressRow("Smoothed", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
                 metric("Spectral Flatness", String(format: "%.2f", snapshot.flatness))
 
-                // Final score components for the additive model (device tuning).
-                metric("Raw Final", formatted(snapshot.rawScore))
-                progressRow("Final / Flame", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
+                metric("Start", formatted(session.debugStrongBlowStartThreshold))
+                metric("Maintain", formatted(session.debugStrongBlowMaintainThreshold))
+                metric("Required Duration", String(format: "%.2f s", session.debugRequiredStrongBlowDuration))
                 progressRow(
                     "Strong",
                     value: Double(
@@ -240,6 +238,36 @@ private struct BlowInspector: View {
                     step: 0.05,
                     format: "%.2f"
                 )
+                sliderRow(
+                    "BB Relative",
+                    value: Binding(
+                        get: { Double(session.debugBroadbandRelativeThreshold) },
+                        set: { session.setDebugBroadbandRelativeThreshold(Float($0)) }
+                    ),
+                    in: 0.02...0.5,
+                    step: 0.02,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "BB Min Active",
+                    value: Binding(
+                        get: { Double(session.debugBroadbandActiveMinProportion) },
+                        set: { session.setDebugBroadbandActiveMinProportion(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
+                sliderRow(
+                    "BB Full Active",
+                    value: Binding(
+                        get: { Double(session.debugBroadbandActiveFullProportion) },
+                        set: { session.setDebugBroadbandActiveFullProportion(Float($0)) }
+                    ),
+                    in: 0...1,
+                    step: 0.05,
+                    format: "%.2f"
+                )
 
                 Divider()
                     .overlay(.white.opacity(0.12))
@@ -284,13 +312,16 @@ private struct BlowInspector: View {
 
     private var copyText: String {
         String(
-            format: "start=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f\nenergyWt=%.2f\nbroadbandWt=%.2f",
+            format: "start=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f\nenergyWt=%.2f\nbroadbandWt=%.2f\nbbRelative=%.2f\nbbMinActive=%.2f\nbbFullActive=%.2f",
             session.debugStrongBlowStartThreshold,
             session.debugStrongBlowMaintainThreshold,
             session.debugRequiredStrongBlowDuration,
             session.debugStrongBlowDecayRate,
             session.debugEnergyScoreWeight,
-            session.debugBroadbandScoreWeight
+            session.debugBroadbandScoreWeight,
+            session.debugBroadbandRelativeThreshold,
+            session.debugBroadbandActiveMinProportion,
+            session.debugBroadbandActiveFullProportion
         )
     }
 
@@ -311,22 +342,23 @@ private struct BlowInspector: View {
 
     private var snapshotText: String {
         let s = session.debugBlowSnapshot
-        func f(_ value: Float) -> String { String(format: "%.3f", value) }
+        func pct(_ value: Float) -> String { String(format: "%d%%", Int((value * 100).rounded())) }
         return """
         Input: \(session.debugInputDescription)
         SampleRate: \(Int(session.debugInputSampleRate.rounded()))
         dBFS: \(String(format: "%.1f", s.dbFS))
 
-        Low:  \(f(s.lowEnergy))
-        Mid:  \(f(s.midEnergy))
-        Up:   \(f(s.upperEnergy))
-        High: \(f(s.highEnergy))
-        Wind: \(f(s.windEnergy))
+        Low:  \(pct(s.lowRatio))
+        Mid:  \(pct(s.midRatio))
+        Up:   \(pct(s.upperRatio))
+        High: \(pct(s.highRatio))
 
-        Energy:   \(String(format: "%.2f", s.energyScore))
+        BB Active: \(pct(s.broadbandActiveProportion))
         Broadband: \(String(format: "%.2f", s.broadbandScore))
-        Final:    \(String(format: "%.2f", s.smoothedIntensity))
-        Flatness: \(String(format: "%.2f", s.flatness))
+        Energy:    \(String(format: "%.2f", s.energyScore))
+        Raw:       \(String(format: "%.2f", s.rawScore))
+        Smoothed:  \(String(format: "%.2f", s.smoothedIntensity))
+        Flatness:  \(String(format: "%.2f", s.flatness))
         """
     }
 
@@ -343,17 +375,17 @@ private struct BlowInspector: View {
         Energy: \(f(s.energyScoreAverage)) (peak \(f(s.energyScorePeak)))
         Broadband: \(p(s.broadbandAverage)) (peak \(p(s.broadbandPeak)))
         Final:  \(f(s.blowScoreAverage)) (peak \(f(s.blowScorePeak)))
-        Bands(avg): Low \(f(s.lowEnergyAverage)) Mid \(f(s.midEnergyAverage)) Up \(f(s.upperEnergyAverage)) High \(f(s.highEnergyAverage))
+        Bands(avg): Low \(p(s.lowRatioAverage)) Mid \(p(s.midRatioAverage)) Up \(p(s.upperRatioAverage)) High \(p(s.highRatioAverage))
         """
     }
 
-    private func energyRow(_ label: String, energy: Float, maxEnergy: Float) -> some View {
+    private func ratioRow(_ label: String, ratio: Float) -> some View {
         HStack(spacing: 8) {
             Text(label)
                 .frame(width: 104, alignment: .leading)
-            ProgressView(value: Double(maxEnergy > 0 ? energy / maxEnergy : 0), total: 1)
+            ProgressView(value: Double(ratio), total: 1)
                 .tint(.orange.opacity(0.85))
-            Text(String(format: "%.3f", energy))
+            Text("\(Int((ratio * 100).rounded()))%")
                 .frame(width: 64, alignment: .trailing)
         }
     }

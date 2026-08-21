@@ -2,18 +2,18 @@ import Accelerate
 import Foundation
 
 #if DEBUG
-/// Full-frame diagnostics for the Inspector. Carries every metric that drives
-/// (or informs) the new blow score, so device tuning does not have to guess.
+/// Full-frame diagnostics for the Inspector. Band values are *ratios* (sum to
+/// one); raw powers stay internal to the detector.
 struct BlowDebugSnapshot: Sendable {
     let rms: Float
     let dbFS: Float
-    let lowEnergy: Float
-    let midEnergy: Float
-    let upperEnergy: Float
-    let highEnergy: Float
-    let windEnergy: Float
-    let energyScore: Float
+    let lowRatio: Float
+    let midRatio: Float
+    let upperRatio: Float
+    let highRatio: Float
+    let broadbandActiveProportion: Float
     let broadbandScore: Float
+    let energyScore: Float
     let rawScore: Float
     let smoothedIntensity: Float
     let flatness: Float
@@ -21,13 +21,13 @@ struct BlowDebugSnapshot: Sendable {
     static let zero = BlowDebugSnapshot(
         rms: 0,
         dbFS: -120,
-        lowEnergy: 0,
-        midEnergy: 0,
-        upperEnergy: 0,
-        highEnergy: 0,
-        windEnergy: 0,
-        energyScore: 0,
+        lowRatio: 0,
+        midRatio: 0,
+        upperRatio: 0,
+        highRatio: 0,
+        broadbandActiveProportion: 0,
         broadbandScore: 0,
+        energyScore: 0,
         rawScore: 0,
         smoothedIntensity: 0,
         flatness: 0
@@ -36,12 +36,18 @@ struct BlowDebugSnapshot: Sendable {
 #endif
 
 /// Core per-frame band analysis (also used in Release — it IS the detector).
+/// Band energies are the raw mean-per-bin powers; ratios are the comparable,
+/// loudness-independent view used by the Inspector.
 private struct BandAnalysis {
     let lowEnergy: Float
     let midEnergy: Float
     let upperEnergy: Float
     let highEnergy: Float
-    let windEnergy: Float
+    let lowRatio: Float
+    let midRatio: Float
+    let upperRatio: Float
+    let highRatio: Float
+    let broadbandActiveProportion: Float
     let broadbandScore: Float
     let flatness: Float
 }
@@ -91,9 +97,8 @@ final class BlowDetector: @unchecked Sendable {
             upper: config.fullScaleRMS
         )
         let broadbandScore = analysis.broadbandScore
-        // Additive mix — no hard energy × texture gate. A loud tone can climb
-        // energy, and a breath climbs both energy and broadband; speech rarely
-        // climbs broadband, which is what keeps it sub-threshold.
+        // Additive mix over the two most reliable cues: loud enough, and
+        // broad across 80–2000 Hz. Band ratios are diagnostics only.
         let rawScore = min(
             max(
                 config.energyScoreWeight * energyScore
@@ -112,13 +117,13 @@ final class BlowDetector: @unchecked Sendable {
             debugSnapshot = BlowDebugSnapshot(
                 rms: rms,
                 dbFS: rms > 0 ? max(-120, 20 * log10(rms)) : -120,
-                lowEnergy: analysis.lowEnergy,
-                midEnergy: analysis.midEnergy,
-                upperEnergy: analysis.upperEnergy,
-                highEnergy: analysis.highEnergy,
-                windEnergy: analysis.windEnergy,
-                energyScore: energyScore,
+                lowRatio: analysis.lowRatio,
+                midRatio: analysis.midRatio,
+                upperRatio: analysis.upperRatio,
+                highRatio: analysis.highRatio,
+                broadbandActiveProportion: analysis.broadbandActiveProportion,
                 broadbandScore: broadbandScore,
+                energyScore: energyScore,
                 rawScore: rawScore,
                 smoothedIntensity: smoothedIntensity,
                 flatness: analysis.flatness
@@ -165,7 +170,8 @@ final class BlowDetector: @unchecked Sendable {
         guard let setup = fftSetup else {
             return BandAnalysis(
                 lowEnergy: 0, midEnergy: 0, upperEnergy: 0, highEnergy: 0,
-                windEnergy: 0, broadbandScore: 0, flatness: 0
+                lowRatio: 0, midRatio: 0, upperRatio: 0, highRatio: 0,
+                broadbandActiveProportion: 0, broadbandScore: 0, flatness: 0
             )
         }
 
@@ -233,14 +239,18 @@ final class BlowDetector: @unchecked Sendable {
         let upperEnergy = meanPower(midEnd, upperEnd)
         let highEnergy = meanPower(upperEnd, highEnd)
 
-        let windEnergy = config.lowBandWeight * lowEnergy
-            + config.midBandWeight * midEnergy
-            + config.upperBandWeight * upperEnergy
-            + config.highBandWeight * highEnergy
+        // Loudness-independent, comparable view: each band's share of total
+        // band power. A 1e-12 epsilon keeps ratios stable at silence.
+        let totalPower = lowEnergy + midEnergy + upperEnergy + highEnergy + 1e-12
+        let lowRatio = lowEnergy / totalPower
+        let midRatio = midEnergy / totalPower
+        let upperRatio = upperEnergy / totalPower
+        let highRatio = highEnergy / totalPower
 
         // Broadband: how much of [broadbandLower, broadbandUpper) rose at once.
         let bbStart = bandLower(config.broadbandLowerHz)
         let bbEnd = bandUpper(config.broadbandUpperHz)
+        var activeProportion: Float = 0
         var broadbandScore: Float = 0
         var flatness: Float = 0
         if bbEnd > bbStart {
@@ -269,6 +279,7 @@ final class BlowDetector: @unchecked Sendable {
 
             if maxPower > 1e-9, rms >= config.silenceFloorRMS {
                 let proportion = Float(activeCount) / Float(bandCount)
+                activeProportion = proportion
                 broadbandScore = normalized(
                     proportion,
                     lower: config.broadbandActiveMinProportion,
@@ -282,7 +293,11 @@ final class BlowDetector: @unchecked Sendable {
             midEnergy: midEnergy,
             upperEnergy: upperEnergy,
             highEnergy: highEnergy,
-            windEnergy: windEnergy,
+            lowRatio: lowRatio,
+            midRatio: midRatio,
+            upperRatio: upperRatio,
+            highRatio: highRatio,
+            broadbandActiveProportion: activeProportion,
             broadbandScore: broadbandScore,
             flatness: flatness
         )

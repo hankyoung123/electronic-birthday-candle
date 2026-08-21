@@ -9,16 +9,14 @@ import Foundation
 /// In Release builds nothing mutates the shared `.standard` instance, so the
 /// values behave as constants.
 ///
-/// Detection model (this round): a real breath is a *broad*, mid-low-frequency
-/// broadband energy rise. We do NOT gate energy through a texture multiplier.
-/// The final score is additive:
+/// Detection model: the final score is additive over two reliable cues —
 ///
-///     Blow Score = Energy Score × energyScoreWeight
-///                + Broadband Score × broadbandScoreWeight
+///     Blow Score = Energy Score × energyScoreWeight        (is it loud?)
+///                + Broadband Score × broadbandScoreWeight  (is 80–2000 Hz wide?)
 ///
-/// where Broadband Score measures how much of the 80–2000 Hz band rose at once
-/// (many bins active relative to the band peak) — which separates wind (broad)
-/// from speech/tone (peaky) without hard-coding any single peak frequency.
+/// The four analysis bands (80–300 / 300–800 / 800–2000 / 2000–5000 Hz) are
+/// computed every frame but exposed as *ratios* for diagnostics only — they do
+/// not feed the decision. No hard energy × texture product gate.
 final class BlowDetectionConfiguration: @unchecked Sendable {
     private let lock = NSLock()
 
@@ -30,34 +28,35 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
     private var _attackSmoothing: Float = 0.28
     private var _releaseSmoothing: Float = 0.10
 
-    // Band edges (Hz). Bands: [80,300) [300,800) [800,2000) [2000,5000).
+    // Band edges (Hz). Analysis bands: [80,300) [300,800) [800,2000) [2000,5000).
     private var _lowBandLowerHz: Double = 80
     private var _lowBandUpperHz: Double = 300
     private var _midBandUpperHz: Double = 800
     private var _upperBandUpperHz: Double = 2_000
     private var _highBandUpperHz: Double = 5_000
 
-    // Wind energy = weighted sum of per-band mean power. Low/Mid are the main
-    // breath features; high is auxiliary only.
-    private var _lowBandWeight: Float = 0.45
-    private var _midBandWeight: Float = 0.35
-    private var _upperBandWeight: Float = 0.15
-    private var _highBandWeight: Float = 0.05
-
     // Broadband band edges (Hz) and active-bin criteria.
+    //
+    // Relaxed enough that a real blow's decaying high end (peak ~200–500 Hz,
+    // tapering toward 2 kHz) still counts as broad — but not so relaxed that
+    // quiet white-ish room noise saturates the broadband score. Measured on
+    // synthetic speech/music/noise/wind, these values keep silence, speech and
+    // music below start while real blows pass. All three are live-tunable.
     private var _broadbandLowerHz: Double = 80
     private var _broadbandUpperHz: Double = 2_000
     /// A bin counts as “active” when it holds at least this fraction of the
     /// band’s peak-power bin.
     private var _broadbandRelativeThreshold: Float = 0.25
     /// Proportion of active bins below which Broadband Score is zero.
-    private var _broadbandActiveMinProportion: Float = 0.35
+    private var _broadbandActiveMinProportion: Float = 0.25
     /// Proportion of active bins at/above which Broadband Score is one.
     private var _broadbandActiveFullProportion: Float = 0.70
 
     // Additive final-score mix (no hard energy × texture gate).
-    private var _energyScoreWeight: Float = 0.7
-    private var _broadbandScoreWeight: Float = 0.3
+    // The broadband term is a *shape* confirmation (rejects tonal speech/music);
+    // energy is what separates a loud blow from quiet broadband room noise.
+    private var _energyScoreWeight: Float = 0.65
+    private var _broadbandScoreWeight: Float = 0.35
 
     // Strong-blow accumulator (CeremonySession).
     private var _strongBlowThreshold: Float = 0.45
@@ -110,26 +109,6 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
     var highBandUpperHz: Double {
         get { lock.withLock { _highBandUpperHz } }
         set { lock.withLock { _highBandUpperHz = newValue } }
-    }
-
-    var lowBandWeight: Float {
-        get { lock.withLock { _lowBandWeight } }
-        set { lock.withLock { _lowBandWeight = newValue } }
-    }
-
-    var midBandWeight: Float {
-        get { lock.withLock { _midBandWeight } }
-        set { lock.withLock { _midBandWeight = newValue } }
-    }
-
-    var upperBandWeight: Float {
-        get { lock.withLock { _upperBandWeight } }
-        set { lock.withLock { _upperBandWeight = newValue } }
-    }
-
-    var highBandWeight: Float {
-        get { lock.withLock { _highBandWeight } }
-        set { lock.withLock { _highBandWeight = newValue } }
     }
 
     var broadbandLowerHz: Double {
@@ -207,10 +186,6 @@ final class BlowDetectionConfiguration: @unchecked Sendable {
                 midBandUpperHz: _midBandUpperHz,
                 upperBandUpperHz: _upperBandUpperHz,
                 highBandUpperHz: _highBandUpperHz,
-                lowBandWeight: _lowBandWeight,
-                midBandWeight: _midBandWeight,
-                upperBandWeight: _upperBandWeight,
-                highBandWeight: _highBandWeight,
                 broadbandLowerHz: _broadbandLowerHz,
                 broadbandUpperHz: _broadbandUpperHz,
                 broadbandRelativeThreshold: _broadbandRelativeThreshold,
@@ -240,10 +215,6 @@ struct BlowDetectionParameters: Sendable {
     let midBandUpperHz: Double
     let upperBandUpperHz: Double
     let highBandUpperHz: Double
-    let lowBandWeight: Float
-    let midBandWeight: Float
-    let upperBandWeight: Float
-    let highBandWeight: Float
     let broadbandLowerHz: Double
     let broadbandUpperHz: Double
     let broadbandRelativeThreshold: Float
