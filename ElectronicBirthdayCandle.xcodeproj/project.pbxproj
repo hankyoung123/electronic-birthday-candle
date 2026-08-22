@@ -21,7 +21,6 @@
 		A1000000000000000000000C /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* AudioEngine.swift */; };
 		A1000000000000000000000D /* BlowDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* BlowDetectorTests.swift */; };
 		A1000000000000000000000E /* SmokeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* SmokeView.swift */; };
-		A1000000000000000000000F /* MusicPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* MusicPicker.swift */; };
 		A10000000000000000000010 /* classic.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* classic.wav */; };
 		A10000000000000000000011 /* piano.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* piano.wav */; };
 		A10000000000000000000012 /* music-box.wav in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* music-box.wav */; };
@@ -61,7 +60,6 @@
 		A2000000000000000000000E /* AudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngine.swift; sourceTree = "<group>"; };
 		A2000000000000000000000F /* BlowDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlowDetectorTests.swift; sourceTree = "<group>"; };
 		A20000000000000000000010 /* SmokeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeView.swift; sourceTree = "<group>"; };
-		A20000000000000000000011 /* MusicPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicPicker.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* classic.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = classic.wav; sourceTree = "<group>"; };
 		A20000000000000000000013 /* piano.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = piano.wav; sourceTree = "<group>"; };
 		A20000000000000000000014 /* music-box.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "music-box.wav"; sourceTree = "<group>"; };
@@ -159,7 +157,6 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000005 /* CeremonyView.swift */,
-				A20000000000000000000011 /* MusicPicker.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -323,7 +320,6 @@
 				A1000000000000000000000C /* AudioEngine.swift in Sources */,
 				A10000000000000000000018 /* SoundClassifier.swift in Sources */,
 				A1000000000000000000000E /* SmokeView.swift in Sources */,
-				A1000000000000000000000F /* MusicPicker.swift in Sources */,
 				A10000000000000000000016 /* HapticEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

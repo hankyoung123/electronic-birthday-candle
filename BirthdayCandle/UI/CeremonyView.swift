@@ -1,40 +1,58 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit
-#endif
 
 @MainActor
 struct CeremonyView: View {
     let session: CeremonySession
-    @State private var activeSheet: CeremonySheet?
-    @State private var isRequestingMicrophoneAccess = false
+    var visualPrototypeEnabled = false
+
+    @State private var isPreparingMicrophone = false
+
+    private let gold = Color("CeremonyGold")
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 34) {
-                Spacer(minLength: 48)
-                message
-                    .frame(height: 48)
-                    .animation(.easeInOut(duration: 0.55), value: session.phase)
-                CandleView(
-                    phase: session.phase,
-                    blowIntensity: session.blowIntensity,
-                    extinguishedAt: session.extinguishedAt
-                )
-                .frame(maxHeight: .infinity)
-                controls.frame(minHeight: 76)
+        GeometryReader { geometry in
+            ZStack {
+                CeremonyBackdrop(phase: session.phase)
+                    .animation(.easeInOut(duration: 0.75), value: session.phase)
+
+                if session.phase.showsCelebrationParticles {
+                    WarmParticleField(
+                        style: session.phase == .lighting ? .ignition : .celebration
+                    )
+                    .id(session.phase)
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.45), value: session.phase)
+                }
+
+                ceremonyStage(in: geometry.size)
+
+                if session.phase == .ready {
+                    readyCue
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .animation(.easeOut(duration: 0.45), value: session.phase)
+                }
+
+                if session.phase == .restartable {
+                    restartCue
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        .animation(.easeOut(duration: 0.5), value: session.phase)
+                }
+
+                if primaryActionEnabled {
+                    Button(action: performPrimaryAction) {
+                        Rectangle()
+                            .fill(.clear)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(primaryActionLabel)
+                    .accessibilityHint(primaryActionHint)
+                }
             }
-            .padding(.horizontal, 28)
-            .padding(.bottom, 28)
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
         }
-        .statusBarHidden(session.phase != .ready)
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .preparation:
-                MusicPicker(session: session)
-            }
-        }
+        .ignoresSafeArea(edges: .bottom)
         .alert(item: Binding(get: { session.notice }, set: { session.notice = $0 })) { notice in
             Alert(
                 title: Text(notice.title),
@@ -44,324 +62,317 @@ struct CeremonyView: View {
         }
     }
 
+    private func ceremonyStage(in size: CGSize) -> some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: max(size.height * 0.08, 48))
+
+            message
+                .frame(height: min(size.height * 0.2, 168))
+                .padding(.horizontal, 28)
+                .animation(
+                    .easeOut(duration: session.phase == .extinguishing ? 0.14 : 0.65),
+                    value: session.phase
+                )
+                .transaction { transaction in
+                    if session.phase == .extinguishing {
+                        transaction.animation = nil
+                    }
+                }
+
+            Spacer(minLength: 4)
+
+            CandleView(
+                phase: session.phase,
+                blowIntensity: session.blowIntensity,
+                extinguishedAt: session.extinguishedAt
+            )
+            .frame(height: min(size.height * 0.56, 470), alignment: .bottom)
+
+            Spacer(minLength: max(size.height * 0.035, 24))
+        }
+    }
+
     @ViewBuilder
     private var message: some View {
-        Group {
-            switch session.phase {
-            case .ready: Text("Make a birthday wish.")
-            case .lighting: Text("Lighting…")
-            case .lit, .wishing: Text("Make a wish.")
-            case .extinguishing, .extinguished: Text("")
-            case .celebrating: Text("Happy Birthday.")
-            }
+        switch session.phase {
+        case .ready, .lit:
+            ritualTitle("Make a wish", style: .prompt)
+        case .wishing:
+            ritualTitle("Blow out\nthe candle", style: .instruction)
+        case .greeting, .celebrating, .completed:
+            birthdayArtwork
+        case .lighting, .extinguishing, .extinguished, .smoking, .restartable:
+            Color.clear
         }
-        .font(.system(size: session.phase == .celebrating ? 30 : 21, weight: .light, design: .rounded))
-        .tracking(0.5)
-        .foregroundStyle(.white.opacity(session.phase == .wishing ? 0.68 : 0.9))
-        .multilineTextAlignment(.center)
-        .transition(.opacity.combined(with: .scale(scale: 0.97)))
-        .accessibilityAddTraits(session.phase == .celebrating ? .isHeader : [])
     }
 
-    @ViewBuilder
-    private var controls: some View {
+    private var birthdayArtwork: some View {
+        Image("CeremonyHappyBirthday")
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .shadow(color: gold.opacity(0.42), radius: 18)
+            .scaleEffect(session.phase == .greeting ? 0.94 : 1)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            .accessibilityLabel("Happy Birthday")
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func ritualTitle(_ text: String, style: RitualTitleStyle) -> some View {
+        Text(text)
+            .font(style.font)
+            .fontWeight(style.weight)
+            .fontWidth(.standard)
+            .tracking(style.tracking)
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [gold.opacity(style.leadingOpacity), Color.white.opacity(0.72)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .multilineTextAlignment(.center)
+            .lineSpacing(1)
+            .shadow(color: gold.opacity(0.18), radius: 14)
+            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+    }
+
+    private var readyCue: some View {
+        VStack(spacing: 10) {
+            if isPreparingMicrophone {
+                ProgressView()
+                    .controlSize(.regular)
+                    .tint(gold)
+                Text("Preparing the moment…")
+                    .font(.caption)
+                    .foregroundStyle(gold.opacity(0.72))
+            } else {
+                Image(systemName: "hand.tap")
+                    .font(.system(size: 30, weight: .light))
+                    .symbolEffect(.pulse, options: .repeating)
+                    .foregroundStyle(gold)
+                Text("Tap anywhere to light the candle")
+                    .font(.caption)
+                    .tracking(0.45)
+                    .foregroundStyle(gold.opacity(0.78))
+            }
+        }
+        .padding(.bottom, 46)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .accessibilityHidden(true)
+    }
+
+    private var restartCue: some View {
+        VStack {
+            Spacer()
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(gold)
+                .padding(12)
+                .overlay {
+                    Circle().stroke(gold.opacity(0.72), lineWidth: 1.2)
+                }
+                .shadow(color: gold.opacity(0.2), radius: 12)
+                .padding(.bottom, 54)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var primaryActionEnabled: Bool {
+        if session.phase == .ready { return !isPreparingMicrophone }
+        if session.phase == .restartable { return true }
+        #if DEBUG
+        if visualPrototypeEnabled, session.phase == .wishing { return true }
+        #endif
+        return false
+    }
+
+    private var primaryActionLabel: String {
+        switch session.phase {
+        case .ready: "Light the candle"
+        case .restartable: "Begin the ceremony again"
+        #if DEBUG
+        case .wishing where visualPrototypeEnabled: "Extinguish the prototype candle"
+        #endif
+        default: "Ceremony"
+        }
+    }
+
+    private var primaryActionHint: String {
+        session.phase == .ready
+            ? "Requests microphone access and starts the birthday ceremony."
+            : "Returns to the unlit candle."
+    }
+
+    private func performPrimaryAction() {
         switch session.phase {
         case .ready:
-            Button(isRequestingMicrophoneAccess ? "Preparing…" : "Start") {
-                guard !isRequestingMicrophoneAccess else { return }
-                isRequestingMicrophoneAccess = true
-                Task {
-                    let isReady = await session.prepareMicrophoneAccess()
-                    isRequestingMicrophoneAccess = false
-                    if isReady { activeSheet = .preparation }
-                }
+            guard !isPreparingMicrophone else { return }
+            isPreparingMicrophone = true
+            Task {
+                let isReady = await session.prepareMicrophoneAccess()
+                isPreparingMicrophone = false
+                if isReady { session.lightCandle() }
             }
-            .buttonStyle(CeremonyButtonStyle())
-            .disabled(isRequestingMicrophoneAccess)
-        case .lighting, .lit, .wishing, .extinguishing, .extinguished:
-            #if DEBUG
-            BlowInspector(session: session)
-            #else
-            EmptyView()
-            #endif
-        case .celebrating:
-            VStack(spacing: 12) {
-                #if DEBUG
-                BlowInspector(session: session)
-                #endif
-                Button("Again") { session.restart() }
-                    .buttonStyle(CeremonyButtonStyle())
-            }
+        case .restartable:
+            session.restart()
+        #if DEBUG
+        case .wishing where visualPrototypeEnabled:
+            session.extinguish()
+        #endif
+        default:
+            break
         }
     }
 }
 
-#if DEBUG
-@MainActor
-private struct BlowInspector: View {
-    let session: CeremonySession
-    @State private var copiedLabel: String?
+private enum RitualTitleStyle: Equatable {
+    case prompt
+    case instruction
+
+    var font: Font {
+        switch self {
+        case .prompt: .system(.title3, design: .serif)
+        case .instruction: .system(.title2, design: .serif)
+        }
+    }
+
+    var weight: Font.Weight {
+        .medium
+    }
+
+    var tracking: CGFloat {
+        0.35
+    }
+
+    var leadingOpacity: Double {
+        0.86
+    }
+}
+
+private struct CeremonyBackdrop: View {
+    let phase: CeremonyPhase
 
     var body: some View {
-        let snapshot = session.debugBlowSnapshot
-        let classification = session.debugSoundClassificationSnapshot
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Blow Inspector")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.orange.opacity(0.9))
-                    Spacer()
-                    copyButton("Copy Snapshot", label: "Snapshot ✓", text: snapshotText)
-                    copyButton("Copy 3s Avg", label: "3s Avg ✓", text: rollingText)
+        ZStack {
+            Color(.systemBackground)
+
+            RadialGradient(
+                colors: [
+                    Color(red: 0.43, green: 0.2, blue: 0.055).opacity(glowOpacity),
+                    Color(red: 0.12, green: 0.055, blue: 0.02).opacity(glowOpacity * 0.45),
+                    .clear
+                ],
+                center: UnitPoint(x: 0.5, y: 0.62),
+                startRadius: 4,
+                endRadius: 310
+            )
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(bottomShade)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+        }
+        .ignoresSafeArea()
+    }
+
+    private var glowOpacity: Double {
+        switch phase {
+        case .ready: 0.08
+        case .lighting: 0.42
+        case .lit: 0.58
+        case .wishing: 0.5
+        case .extinguishing: 0.3
+        case .extinguished: 0.13
+        case .smoking: 0.06
+        case .greeting: 0.05
+        case .celebrating: 0.17
+        case .completed: 0.06
+        case .restartable: 0
+        }
+    }
+
+    private var bottomShade: Double {
+        switch phase {
+        case .lighting, .lit, .wishing: 0.18
+        default: 0.48
+        }
+    }
+}
+
+private struct WarmParticleField: View {
+    enum Style {
+        case ignition
+        case celebration
+    }
+
+    let style: Style
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var startedAt = Date()
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1.0 / 12.0 : 1.0 / 30.0)) { timeline in
+            Canvas(rendersAsynchronously: true) { context, size in
+                let elapsed = reduceMotion ? 0.6 : timeline.date.timeIntervalSince(startedAt)
+                let count = style == .ignition ? 28 : 52
+                for index in 0..<count {
+                    drawParticle(index: index, elapsed: elapsed, size: size, context: &context)
                 }
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 
-                metric("Voice Processing", session.debugVoiceProcessingEnabled ? "On" : "Off")
-                metric("Mic Permission", session.debugMicrophonePermissionGranted ? "Granted" : "Denied")
-                metric("Session Active", session.debugAudioSessionActive ? "Yes" : "No")
-                if let diagnostic = session.debugLastStartDiagnostic {
-                    metric("Start Failure", diagnostic)
-                }
-                metric("Input Route", session.debugInputDescription)
-                metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
+    private func drawParticle(
+        index: Int,
+        elapsed: TimeInterval,
+        size: CGSize,
+        context: inout GraphicsContext
+    ) {
+        let seed = random(index, salt: 0.37)
+        let speed = 0.12 + random(index, salt: 2.1) * 0.17
+        let progress = (elapsed * speed + seed).truncatingRemainder(dividingBy: 1)
+        let width = 2.0 + random(index, salt: 4.7) * 4.5
+        let height = width * (0.65 + random(index, salt: 8.2) * 1.4)
 
-                Divider().overlay(.white.opacity(0.12))
+        let point: CGPoint
+        if style == .ignition {
+            let spread = (random(index, salt: 1.7) - 0.5) * size.width * 0.34
+            point = CGPoint(
+                x: size.width * 0.5 + spread + sin(elapsed * 1.8 + Double(index)) * 8,
+                y: size.height * 0.7 - progress * size.height * 0.42
+            )
+        } else {
+            point = CGPoint(
+                x: random(index, salt: 6.3) * size.width,
+                y: size.height * (0.12 + progress * 0.78)
+            )
+        }
 
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Wind Detector")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.orange.opacity(0.9))
-                        Text("80–500 Hz airflow — blow candidate")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.52))
-                    }
-                    Spacer()
-                    copyButton("Copy Values", label: "Values ✓", text: copyValuesText)
-                }
-
-                metric("RMS / dBFS", "\(formatted(snapshot.rms)) / \(String(format: "%.1f dB", snapshot.dbFS))")
-                progressRow("Wind Band RMS", value: Double(snapshot.windBandRMS), detail: formatted(snapshot.windBandRMS))
-                progressRow("Wind Ratio", value: Double(snapshot.windRatio), detail: pct(snapshot.windRatio))
-                metric("Wind Energy Score", formatted(snapshot.windEnergyScore))
-                metric("Wind Ratio Score", formatted(snapshot.windRatioScore))
-                metric("Raw Blow Score", formatted(snapshot.rawScore))
-                progressRow("Smoothed Blow", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
-                metric("Blow Candidate", session.debugBlowCandidateActive ? "Active" : "Inactive")
-
-                Divider().overlay(.white.opacity(0.12))
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Speech (veto only)")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.cyan.opacity(0.9))
-                        Text("Never proves a blow; only overrides")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.52))
-                    }
-                    Spacer()
-                }
-                progressRow("Speech Confidence", value: session.debugSpeechConfidence, detail: String(format: "%.2f", session.debugSpeechConfidence))
-                if let diagnostic = session.debugSoundClassificationDiagnostic {
-                    metric("Classifier Error", diagnostic)
-                }
-                Text("Top 5")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.68))
-                if classification.topClassifications.isEmpty {
-                    metric("Waiting", "Listening for a 0.5 s window…")
-                } else {
-                    ForEach(Array(classification.topClassifications.enumerated()), id: \.offset) { index, prediction in
-                        classificationRow(index: index + 1, prediction: prediction)
-                    }
-                }
-
-                Divider().overlay(.white.opacity(0.12))
-
-                progressRow(
-                    "Evidence",
-                    value: Double(
-                        session.debugRequiredStrongBlowDuration > 0
-                            ? session.debugStrongBlowDuration / session.debugRequiredStrongBlowDuration
-                            : 0
-                    ),
-                    detail: String(
-                        format: "%.2f / %.2f s",
-                        session.debugStrongBlowDuration,
-                        session.debugRequiredStrongBlowDuration
-                    )
+        let edgeFade = sin(progress * .pi)
+        context.drawLayer { layer in
+            layer.opacity = edgeFade * (style == .ignition ? 0.48 : 0.58)
+            layer.translateBy(x: point.x, y: point.y)
+            layer.rotate(by: .degrees(elapsed * 44 + Double(index * 19)))
+            let rect = CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+            layer.fill(
+                Path(roundedRect: rect, cornerRadius: width * 0.35),
+                with: .color(
+                    index.isMultiple(of: 3)
+                        ? Color(red: 1, green: 0.68, blue: 0.24)
+                        : Color("CeremonyGold")
                 )
-                metric("Start", formatted(session.debugStrongBlowStartThreshold))
-                metric("Maintain", formatted(session.debugStrongBlowMaintainThreshold))
-                metric("Required", String(format: "%.2f s", session.debugRequiredStrongBlowDuration))
-                metric("Decay", String(format: "%.2f×", session.debugStrongBlowDecayRate))
-
-                Divider().overlay(.white.opacity(0.12))
-
-                Text("Live Tuning")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.orange.opacity(0.9))
-
-                sliderRow("Wind Start", value: Binding(get: { Double(session.debugWindStart) }, set: { session.setDebugWindStart(Float($0)) }), in: 0.005...0.3, step: 0.005, format: "%.3f")
-                sliderRow("Wind Full", value: Binding(get: { Double(session.debugWindFull) }, set: { session.setDebugWindFull(Float($0)) }), in: 0.01...0.3, step: 0.005, format: "%.3f")
-                sliderRow("Ratio Start", value: Binding(get: { Double(session.debugWindRatioStart) }, set: { session.setDebugWindRatioStart(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
-                sliderRow("Ratio Full", value: Binding(get: { Double(session.debugWindRatioFull) }, set: { session.setDebugWindRatioFull(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
-                sliderRow("Energy Wt", value: Binding(get: { Double(session.debugEnergyWeight) }, set: { session.setDebugEnergyWeight(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
-                sliderRow("Ratio Wt", value: Binding(get: { Double(session.debugRatioWeight) }, set: { session.setDebugRatioWeight(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
-                sliderRow("Start", value: Binding(get: { Double(session.debugStrongBlowStartThreshold) }, set: { session.setDebugStrongBlowStartThreshold(Float($0)) }), in: 0.05...1, step: 0.01, format: "%.2f")
-                sliderRow("Maintain", value: Binding(get: { Double(session.debugStrongBlowMaintainThreshold) }, set: { session.setDebugStrongBlowMaintainThreshold(Float($0)) }), in: 0...1, step: 0.01, format: "%.2f")
-                sliderRow("Duration", value: Binding(get: { session.debugRequiredStrongBlowDuration }, set: { session.setDebugRequiredStrongBlowDuration($0) }), in: 0.1...2, step: 0.01, format: "%.2f s")
-                sliderRow("Decay", value: Binding(get: { session.debugStrongBlowDecayRate }, set: { session.setDebugStrongBlowDecayRate($0) }), in: 0...2, step: 0.05, format: "%.2f")
-
-                Divider().overlay(.white.opacity(0.12))
-
-                HStack(spacing: 8) {
-                    Text("Music").frame(width: 120, alignment: .leading)
-                    Slider(
-                        value: Binding(
-                            get: { Double(session.debugMusicVolume) },
-                            set: { session.setDebugMusicVolume(Float($0)) }
-                        ),
-                        in: 0...1,
-                        step: 0.1
-                    )
-                    .tint(.orange.opacity(0.72))
-                    Text("\(Int((session.debugMusicVolume * 100).rounded()))%")
-                        .frame(width: 70, alignment: .trailing)
-                }
-            }
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.76))
-            .padding(12)
-            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-        }
-        .frame(maxHeight: 500)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func copyButton(_ title: String, label: String, text: String) -> some View {
-        Button {
-            UIPasteboard.general.string = text
-            copiedLabel = label
-            Task {
-                try? await Task.sleep(for: .seconds(1.4))
-                copiedLabel = nil
-            }
-        } label: {
-            Text(copiedLabel == label ? label : title)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(copiedLabel == label ? .green : .orange)
+            )
         }
     }
 
-    private var copyValuesText: String {
-        String(
-            format: "windStart=%.3f\nwindFull=%.3f\nwindRatioStart=%.2f\nwindRatioFull=%.2f\nenergyWt=%.2f\nratioWt=%.2f\nstart=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f",
-            session.debugWindStart,
-            session.debugWindFull,
-            session.debugWindRatioStart,
-            session.debugWindRatioFull,
-            session.debugEnergyWeight,
-            session.debugRatioWeight,
-            session.debugStrongBlowStartThreshold,
-            session.debugStrongBlowMaintainThreshold,
-            session.debugRequiredStrongBlowDuration,
-            session.debugStrongBlowDecayRate
-        )
-    }
-
-    private var snapshotText: String {
-        let snapshot = session.debugBlowSnapshot
-        return """
-        Input: \(session.debugInputDescription)
-        Sample Rate: \(Int(session.debugInputSampleRate.rounded())) Hz
-        Voice Processing: \(session.debugVoiceProcessingEnabled ? "On" : "Off")
-        dBFS: \(String(format: "%.1f", snapshot.dbFS))
-
-        WindRMS: \(formatted(snapshot.windBandRMS))
-        WindRatio: \(String(format: "%.2f", snapshot.windRatio))
-        WindEnergy: \(String(format: "%.2f", snapshot.windEnergyScore))
-        WindRatioScore: \(String(format: "%.2f", snapshot.windRatioScore))
-        Raw: \(String(format: "%.2f", snapshot.rawScore))
-        Smoothed: \(String(format: "%.2f", snapshot.smoothedIntensity))
-
-        Speech: \(String(format: "%.2f", session.debugSpeechConfidence))
-        Candidate: \(session.debugBlowCandidateActive ? "Active" : "Inactive")
-        Evidence: \(String(format: "%.2f", session.debugStrongBlowDuration)) / \(String(format: "%.2f", session.debugRequiredStrongBlowDuration)) s
-        """
-    }
-
-    private var rollingText: String {
-        let s = session.debugSpectrumRollingSummary
-        guard s.sampleCount > 0 else {
-            return "No samples yet — blow detection must be active for ~3s."
-        }
-        return """
-        -- 3s Avg (N=\(s.sampleCount)) --
-        dBFS:  \(f(s.dbFSAverage)) (peak \(f(s.dbFSPeak)))
-        WindRMS: \(f(s.windBandRMSAverage)) (peak \(f(s.windBandRMSPeak)))
-        WindRatio: \(f(s.windRatioAverage)) (peak \(f(s.windRatioPeak)))
-        Raw: \(f(s.rawAverage)) (peak \(f(s.rawPeak)))
-        Smoothed: \(f(s.smoothedAverage)) (peak \(f(s.smoothedPeak)))
-        """
-    }
-
-    private func metric(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 8) {
-            Text(label).frame(width: 120, alignment: .leading)
-            Text(value).lineLimit(1).minimumScaleFactor(0.72)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func progressRow(_ label: String, value: Double, detail: String) -> some View {
-        HStack(spacing: 8) {
-            Text(label).frame(width: 120, alignment: .leading)
-            ProgressView(value: min(max(value, 0), 1), total: 1).tint(.orange)
-            Text(detail).lineLimit(1).frame(width: 90, alignment: .trailing)
-        }
-    }
-
-    private func classificationRow(index: Int, prediction: SoundClassificationPrediction) -> some View {
-        HStack(spacing: 8) {
-            Text("\(index).").frame(width: 18, alignment: .trailing).foregroundStyle(.white.opacity(0.48))
-            Text(prediction.identifier).lineLimit(1).minimumScaleFactor(0.65)
-            Spacer(minLength: 6)
-            Text(confidence(prediction.confidence)).frame(width: 44, alignment: .trailing)
-        }
-    }
-
-    private func sliderRow(_ label: String, value: Binding<Double>, in range: ClosedRange<Double>, step: Double, format: String) -> some View {
-        let displayed = String(format: format, value.wrappedValue)
-        return HStack(spacing: 8) {
-            Text(label).frame(width: 120, alignment: .leading)
-            Slider(value: value, in: range, step: step).tint(.orange.opacity(0.72))
-            Text(displayed).frame(width: 90, alignment: .trailing)
-        }
-    }
-
-    private func f(_ value: Float) -> String { String(format: "%.2f", value) }
-    private func formatted(_ value: Float) -> String { String(format: "%.3f", value) }
-    private func pct(_ value: Float) -> String { String(format: "%d%%", Int((value * 100).rounded())) }
-    private func confidence(_ value: Double) -> String { String(format: "%.2f", value) }
-}
-#endif
-
-private enum CeremonySheet: String, Identifiable {
-    case preparation
-    var id: String { rawValue }
-}
-
-private struct CeremonyButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 17, weight: .medium, design: .rounded))
-            .foregroundStyle(.black)
-            .padding(.horizontal, 28)
-            .frame(height: 52)
-            .background(.white.opacity(configuration.isPressed ? 0.72 : 0.94), in: Capsule())
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.16), value: configuration.isPressed)
+    private func random(_ index: Int, salt: Double) -> Double {
+        let value = sin(Double(index + 1) * 12.9898 + salt * 78.233) * 43_758.5453
+        return value - floor(value)
     }
 }

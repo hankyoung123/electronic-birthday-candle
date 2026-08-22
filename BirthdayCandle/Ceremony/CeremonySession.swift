@@ -172,9 +172,25 @@ final class CeremonySession {
             self.extinguishedAt = Date()
             self.transition(to: .extinguished)
 
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: .seconds(CeremonyTiming.extinguishedHoldDuration))
             guard !Task.isCancelled, self.phase == .extinguished else { return }
+            self.transition(to: .smoking)
+
+            try? await Task.sleep(for: .seconds(CeremonyTiming.smokeRiseDuration))
+            guard !Task.isCancelled, self.phase == .smoking else { return }
+            self.transition(to: .greeting)
+
+            try? await Task.sleep(for: .seconds(CeremonyTiming.greetingRevealDuration))
+            guard !Task.isCancelled, self.phase == .greeting else { return }
             self.transition(to: .celebrating)
+
+            try? await Task.sleep(for: .seconds(CeremonyTiming.celebrationDuration))
+            guard !Task.isCancelled, self.phase == .celebrating else { return }
+            self.transition(to: .completed)
+
+            try? await Task.sleep(for: .seconds(CeremonyTiming.completedHoldDuration))
+            guard !Task.isCancelled, self.phase == .completed else { return }
+            self.transition(to: .restartable)
         }
     }
 
@@ -304,11 +320,19 @@ final class CeremonySession {
             resetCandidate()
             audioEngine?.playEffect(resourceName: "extinguish", volume: 0.62)
             if musicEnabled { audioEngine?.fadeMusic(to: 0.18, duration: 0.35) }
+        case .smoking:
+            if musicEnabled { audioEngine?.fadeMusic(to: 0.08, duration: 0.8) }
+        case .greeting:
+            if musicEnabled { audioEngine?.fadeMusic(to: 0.2, duration: 0.9) }
         case .celebrating:
             if musicEnabled {
                 audioEngine?.fadeMusic(to: 0.46, duration: 0.8)
                 audioEngine?.playEffect(resourceName: "celebration", volume: 0.74)
             }
+        case .completed:
+            if musicEnabled { audioEngine?.fadeMusic(to: 0.12, duration: 1.0) }
+        case .restartable:
+            audioEngine?.stopMusic()
         case .ready, .lighting, .extinguished:
             break
         }

@@ -13,9 +13,20 @@ struct BirthdayCandleApp: App {
 @MainActor
 private struct CeremonyRootView: View {
     @State private var session: CeremonySession
+    private let visualPrototypeEnabled: Bool
 
     init() {
-        let audioEngine = AudioEngine()
+        #if DEBUG
+        let visualPrototypeEnabled = ProcessInfo.processInfo.arguments.contains("-VisualPrototype")
+        #else
+        let visualPrototypeEnabled = false
+        #endif
+        self.visualPrototypeEnabled = visualPrototypeEnabled
+        #if DEBUG
+        let audioEngine: AudioEngine? = visualPrototypeEnabled ? nil : AudioEngine()
+        #else
+        let audioEngine: AudioEngine? = AudioEngine()
+        #endif
         let hapticEngine = HapticEngine()
         _session = State(
             initialValue: CeremonySession(
@@ -26,6 +37,9 @@ private struct CeremonyRootView: View {
     }
 
     var body: some View {
-        CeremonyView(session: session)
+        CeremonyView(
+            session: session,
+            visualPrototypeEnabled: visualPrototypeEnabled
+        )
     }
 }

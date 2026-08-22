@@ -8,97 +8,62 @@ struct FlameView: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 1.0 / 15.0 : 1.0 / 60.0)) { timeline in
-            Canvas(rendersAsynchronously: true) { context, size in
-                render(
-                    in: &context,
-                    size: size,
-                    time: timeline.date.timeIntervalSinceReferenceDate
+            GeometryReader { geometry in
+                let motion = motionValues(at: timeline.date.timeIntervalSinceReferenceDate)
+
+                ZStack {
+                    Image("CeremonyFlame")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+
+                    Image("CeremonyFlame")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                        .blur(radius: 9)
+                        .opacity(0.2)
+                        .blendMode(.plusLighter)
+                }
+                .scaleEffect(
+                    x: motion.widthScale,
+                    y: motion.heightScale,
+                    anchor: .bottom
                 )
+                .rotationEffect(.degrees(motion.rotation), anchor: .bottom)
+                .offset(x: motion.horizontalOffset, y: motion.verticalOffset)
+                .brightness(motion.brightness)
+                .shadow(
+                    color: Color.orange.opacity(motion.glowOpacity),
+                    radius: motion.glowRadius
+                )
+                .compositingGroup()
             }
         }
         .accessibilityHidden(true)
     }
 
-    private func render(in context: inout GraphicsContext, size: CGSize, time: TimeInterval) {
+    private func motionValues(at time: TimeInterval) -> FlameMotionValues {
         let wind = CGFloat(blowIntensity.clamped(to: 0...1))
-        let drift = reduceMotion ? 0 : smoothNoise(at: time * 1.15, seed: 0.37) * 0.052
-        let flutter = reduceMotion ? 0 : smoothNoise(at: time * 5.4, seed: 1.91) * 0.032
-        let shimmer = reduceMotion ? 0 : smoothNoise(at: time * 12.7, seed: 4.63) * 0.014
+        let slowFlicker = reduceMotion ? 0 : smoothNoise(at: time * 1.7, seed: 0.37)
+        let quickFlicker = reduceMotion ? 0 : smoothNoise(at: time * 7.8, seed: 1.91)
         let struggle = reduceMotion
             ? 0
-            : smoothNoise(at: time * (6.2 + Double(wind) * 9.8), seed: 8.17)
-                * (0.018 + wind * 0.105)
-        let flicker = drift + flutter + shimmer + struggle
-        let lightingScale: CGFloat = phase == .lighting ? 0.72 : 1
-        let height = size.height * (0.78 - wind * 0.27 + flicker) * lightingScale
-        let width = size.width
-            * (0.29 - wind * 0.075 + abs(drift) * 0.12 + flutter * 0.035)
-            * lightingScale
-        let bend = size.width * (wind * 0.38 + drift * 0.42 + flutter * 0.12)
-        let baseY = size.height * 0.93
-        let centerX = size.width * 0.5
+            : smoothNoise(at: time * (9.0 + Double(wind) * 12.0), seed: 8.17)
+        let lightingScale: CGFloat = phase == .lighting ? 0.74 : 1
 
-        context.drawLayer { glow in
-            glow.addFilter(.blur(radius: 21 + wind * 7))
-            glow.opacity = 0.32 - Double(wind) * 0.08 + Double(shimmer) * 1.2
-            let glowRect = CGRect(
-                x: centerX - width * 1.15 + bend * 0.25,
-                y: baseY - height * 0.95,
-                width: width * 2.3,
-                height: height * 1.02
-            )
-            glow.fill(Path(ellipseIn: glowRect), with: .color(Color.orange))
-        }
-
-        let outer = flamePath(
-            centerX: centerX,
-            baseY: baseY,
-            width: width,
-            height: height,
-            bend: bend
-        )
-        context.fill(
-            outer,
-            with: .linearGradient(
-                Gradient(colors: [
-                    Color(red: 1, green: 0.24, blue: 0.02, opacity: 0.82),
-                    Color(red: 1, green: 0.61, blue: 0.05),
-                    Color(red: 1, green: 0.91, blue: 0.36, opacity: 0.94)
-                ]),
-                startPoint: CGPoint(x: centerX, y: baseY),
-                endPoint: CGPoint(x: centerX + bend, y: baseY - height)
-            )
-        )
-
-        let inner = flamePath(
-            centerX: centerX + bend * 0.15,
-            baseY: baseY - 3,
-            width: width * 0.52,
-            height: height * 0.61,
-            bend: bend * 0.62
-        )
-        context.fill(
-            inner,
-            with: .linearGradient(
-                Gradient(colors: [
-                    Color(red: 1, green: 0.93, blue: 0.62),
-                    Color(red: 1, green: 0.76, blue: 0.18),
-                    Color.white.opacity(0.88)
-                ]),
-                startPoint: CGPoint(x: centerX, y: baseY),
-                endPoint: CGPoint(x: centerX + bend * 0.5, y: baseY - height * 0.65)
-            )
-        )
-
-        let coreRect = CGRect(
-            x: centerX - width * 0.13,
-            y: baseY - height * 0.25,
-            width: width * 0.26,
-            height: height * 0.24
-        )
-        context.fill(
-            Path(ellipseIn: coreRect),
-            with: .color(Color(red: 0.76, green: 0.93, blue: 1, opacity: 0.78))
+        return FlameMotionValues(
+            widthScale: (1 + wind * 0.2 + abs(quickFlicker) * 0.025) * lightingScale,
+            heightScale: (1 - wind * 0.24 + slowFlicker * 0.025 + struggle * wind * 0.045)
+                * lightingScale,
+            rotation: Double(-wind * 31 + slowFlicker * 2.2 + quickFlicker * 0.75),
+            horizontalOffset: -wind * 17 + slowFlicker * 1.8,
+            verticalOffset: wind * 4 - quickFlicker * 0.8,
+            brightness: Double(quickFlicker * 0.025 - wind * 0.035),
+            glowOpacity: 0.42 - Double(wind) * 0.1,
+            glowRadius: 20 + wind * 8
         )
     }
 
@@ -115,43 +80,17 @@ struct FlameView: View {
         let value = sin(position * 12.9898 + seed * 78.233) * 43_758.5453
         return (value - floor(value)) * 2 - 1
     }
+}
 
-    private func flamePath(
-        centerX: CGFloat,
-        baseY: CGFloat,
-        width: CGFloat,
-        height: CGFloat,
-        bend: CGFloat
-    ) -> Path {
-        var path = Path()
-        let tip = CGPoint(x: centerX + bend, y: baseY - height)
-        let left = CGPoint(x: centerX - width * 0.5, y: baseY - height * 0.13)
-        let right = CGPoint(x: centerX + width * 0.5, y: baseY - height * 0.1)
-
-        path.move(to: CGPoint(x: centerX, y: baseY))
-        path.addCurve(
-            to: left,
-            control1: CGPoint(x: centerX - width * 0.26, y: baseY),
-            control2: CGPoint(x: left.x, y: baseY - height * 0.04)
-        )
-        path.addCurve(
-            to: tip,
-            control1: CGPoint(x: left.x - bend * 0.08, y: baseY - height * 0.48),
-            control2: CGPoint(x: tip.x - width * 0.28 - bend * 0.22, y: tip.y + height * 0.32)
-        )
-        path.addCurve(
-            to: right,
-            control1: CGPoint(x: tip.x + width * 0.18 + bend * 0.08, y: tip.y + height * 0.28),
-            control2: CGPoint(x: right.x + bend * 0.12, y: baseY - height * 0.49)
-        )
-        path.addCurve(
-            to: CGPoint(x: centerX, y: baseY),
-            control1: CGPoint(x: right.x, y: baseY - height * 0.03),
-            control2: CGPoint(x: centerX + width * 0.25, y: baseY)
-        )
-        path.closeSubpath()
-        return path
-    }
+private struct FlameMotionValues {
+    let widthScale: CGFloat
+    let heightScale: CGFloat
+    let rotation: Double
+    let horizontalOffset: CGFloat
+    let verticalOffset: CGFloat
+    let brightness: Double
+    let glowOpacity: Double
+    let glowRadius: CGFloat
 }
 
 private extension Comparable {

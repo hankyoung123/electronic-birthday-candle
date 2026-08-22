@@ -7,6 +7,19 @@ final class CeremonySessionTests: XCTestCase {
     func testEmberAppearsOnlyAfterExtinguishingCompletes() {
         XCTAssertFalse(CeremonyPhase.extinguishing.showsEmber)
         XCTAssertTrue(CeremonyPhase.extinguished.showsEmber)
+        XCTAssertTrue(CeremonyPhase.smoking.showsEmber)
+        XCTAssertFalse(CeremonyPhase.greeting.showsEmber)
+    }
+
+    func testPrototypePhaseVisualSemantics() {
+        XCTAssertTrue(CeremonyPhase.lighting.showsCelebrationParticles)
+        XCTAssertTrue(CeremonyPhase.celebrating.showsCelebrationParticles)
+        XCTAssertTrue(CeremonyPhase.extinguished.showsSmoke)
+        XCTAssertTrue(CeremonyPhase.smoking.showsSmoke)
+        XCTAssertTrue(CeremonyPhase.greeting.showsSmoke)
+        XCTAssertTrue(CeremonyPhase.greeting.showsGreeting)
+        XCTAssertTrue(CeremonyPhase.completed.showsGreeting)
+        XCTAssertFalse(CeremonyPhase.restartable.showsCandle)
     }
 
     func testPreparationWithoutAudioEngineCanProceed() async {
@@ -151,6 +164,24 @@ final class CeremonySessionTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(260))
         XCTAssertEqual(session.phase, .extinguished)
         XCTAssertNotNil(session.extinguishedAt)
+    }
+
+    func testPostExtinguishCeremonyBecomesRestartable() async {
+        let session = await makeWishingSession()
+        session.extinguish()
+
+        let postExtinguishDuration = CeremonyTiming.extinguishingDuration
+            + CeremonyTiming.extinguishedHoldDuration
+            + CeremonyTiming.smokeRiseDuration
+            + CeremonyTiming.greetingRevealDuration
+            + CeremonyTiming.celebrationDuration
+            + CeremonyTiming.completedHoldDuration
+        try? await Task.sleep(for: .seconds(postExtinguishDuration + 0.25))
+
+        XCTAssertEqual(session.phase, .restartable)
+        session.restart()
+        XCTAssertEqual(session.phase, .ready)
+        XCTAssertNil(session.extinguishedAt)
     }
 
     private func makeLitSession() async -> CeremonySession {

@@ -7,79 +7,130 @@ struct CandleView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color(red: 0.98, green: 0.86, blue: 0.62), Color(red: 0.72, green: 0.47, blue: 0.25)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 66, height: 250)
+            if phase.showsCandle {
+                candleShadow
+                candleBody
 
-            Capsule()
-                .fill(.black.opacity(0.84))
-                .frame(width: 4, height: 27)
-                .offset(y: -239)
+                if phase.showsEmber {
+                    ember
+                }
 
-            if phase.showsEmber {
-                Circle()
-                    .fill(Color(red: 1, green: 0.19, blue: 0.04))
-                    .frame(width: 7, height: 7)
-                    .shadow(color: .red.opacity(0.9), radius: 8)
-                    .offset(y: -260)
-                    .transition(.opacity)
+                FlameView(blowIntensity: blowIntensity, phase: phase)
+                    .frame(width: 170, height: 210)
+                    .offset(y: -248)
+                    .opacity(flameOpacity)
+                    .scaleEffect(flameScale, anchor: .bottom)
+                    .animation(flameAnimation, value: phase)
             }
-
-            FlameView(blowIntensity: blowIntensity, phase: phase)
-                .frame(width: 152, height: 164)
-                .offset(y: -247)
-                .opacity(flameOpacity)
-                .scaleEffect(flameScale, anchor: .bottom)
-                .animation(flameAnimation, value: phase)
 
             if phase.showsSmoke, let extinguishedAt {
                 SmokeView(startedAt: extinguishedAt)
-                    .frame(width: 190, height: 250)
-                    .offset(y: -252)
+                    .frame(width: 230, height: 330)
+                    .offset(y: -230)
                     .transition(.opacity)
             }
         }
-        .frame(width: 190, height: 420, alignment: .bottom)
-        .animation(.easeOut(duration: 0.24), value: phase.showsEmber)
-        .animation(.easeOut(duration: 0.45), value: phase.showsSmoke)
+        .frame(width: 230, height: 440, alignment: .bottom)
+        .scaleEffect(candleScale, anchor: .bottom)
+        .opacity(candleOpacity)
+        .animation(.easeInOut(duration: 1.0), value: phase)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(phase.showsFlame ? "Lit candle" : "Unlit candle")
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var candleBody: some View {
+        Image("CeremonyCandle")
+            .resizable()
+            .scaledToFill()
+            .frame(width: 150, height: 320)
+            .clipped()
+            .offset(y: 20)
+            .shadow(color: Color.orange.opacity(bodyGlowOpacity), radius: 28, y: -14)
+            .shadow(color: .black.opacity(0.85), radius: 9, y: 7)
+    }
+
+    private var ember: some View {
+        Circle()
+            .fill(Color(red: 1, green: 0.25, blue: 0.025))
+            .frame(width: 9, height: 9)
+            .overlay {
+                Circle()
+                    .fill(.white.opacity(0.78))
+                    .frame(width: 3, height: 3)
+            }
+            .shadow(color: Color.orange, radius: 13)
+            .offset(y: -268)
+            .transition(.scale.combined(with: .opacity))
+    }
+
+    private var candleShadow: some View {
+        Ellipse()
+            .fill(.black.opacity(0.88))
+            .frame(width: 172, height: 34)
+            .blur(radius: 11)
+            .offset(y: -2)
+    }
+
+    private var candleScale: CGFloat {
+        switch phase {
+        case .ready: 0.84
+        case .lighting: 0.93
+        case .lit, .wishing, .extinguishing: 1
+        case .extinguished: 0.97
+        case .smoking: 0.92
+        case .greeting, .celebrating: 0.84
+        case .completed: 0.76
+        case .restartable: 0.68
+        }
+    }
+
+    private var candleOpacity: Double {
+        switch phase {
+        case .ready: 0.84
+        case .lighting: 0.96
+        case .lit, .wishing, .extinguishing: 1
+        case .extinguished: 0.94
+        case .smoking: 0.82
+        case .greeting: 0.64
+        case .celebrating: 0.72
+        case .completed: 0.42
+        case .restartable: 0
+        }
+    }
+
+    private var bodyGlowOpacity: Double {
+        switch phase {
+        case .lighting, .lit, .wishing: 0.3
+        default: 0
+        }
     }
 
     private var flameOpacity: Double {
         switch phase {
-        case .lighting, .lit, .wishing:
-            1
-        case .extinguishing:
-            0.08
-        case .ready, .extinguished, .celebrating:
-            0
+        case .lighting, .lit, .wishing: 1
+        case .extinguishing: 0.08
+        default: 0
         }
     }
 
     private var flameScale: CGFloat {
         switch phase {
-        case .lighting, .lit, .wishing:
-            1
-        case .ready, .extinguishing, .extinguished, .celebrating:
-            0.08
+        case .lighting: 0.72
+        case .lit, .wishing: 1
+        case .extinguishing: 0.05
+        default: 0.05
         }
     }
 
     private var flameAnimation: Animation {
-        switch phase {
-        case .extinguishing:
-            .easeIn(duration: CeremonyTiming.extinguishingDuration)
-        case .extinguished:
-            .linear(duration: 0.04)
-        case .ready, .lighting, .lit, .wishing, .celebrating:
-            .easeOut(duration: 0.45)
-        }
+        phase == .extinguishing
+            ? .easeIn(duration: CeremonyTiming.extinguishingDuration)
+            : .easeOut(duration: 0.55)
+    }
+
+    private var accessibilityLabel: String {
+        if phase.showsFlame { return "Lit candle" }
+        if phase.showsSmoke { return "Extinguished candle with rising smoke" }
+        return "Unlit candle"
     }
 }
