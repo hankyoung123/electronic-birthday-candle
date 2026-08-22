@@ -5,19 +5,28 @@ final class BlowDetectorTests: XCTestCase {
     private let sampleRate = 44_100.0
     private let frameCount = 2_048
 
-    func testSilenceProducesLowVisualIntensity() {
+    func testSilenceProducesLowIntensity() {
         let detector = BlowDetector()
         let result = feed([Float](repeating: 0, count: frameCount), detector: detector, count: 12)
         XCTAssertLessThan(result, 0.03)
     }
 
-    func testLowFrequencyWindProducesVisibleIntensity() {
+    /// A real breath (low-frequency airflow) produces a high wind score.
+    func testLowFrequencyWindProducesHighScore() {
         let detector = BlowDetector()
         let result = feed(windLikeSignal(amplitude: 0.16), detector: detector, count: 16)
-        XCTAssertGreaterThan(result, 0.6)
+        XCTAssertGreaterThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
-    func testStrongerWindProducesMoreVisualIntensity() {
+    /// Light wind still produces a clearly visible (useful) score.
+    func testLightWindProducesUsefulScore() {
+        let detector = BlowDetector()
+        let result = feed(windLikeSignal(amplitude: 0.05), detector: detector, count: 16)
+        XCTAssertGreaterThan(result, 0.05)
+        XCTAssertLessThan(result, 1.0)
+    }
+
+    func testStrongerWindProducesMoreIntensity() {
         let light = BlowDetector()
         let strong = BlowDetector()
         let lightResult = feed(windLikeSignal(amplitude: 0.02), detector: light, count: 10)
@@ -25,21 +34,28 @@ final class BlowDetectorTests: XCTestCase {
         XCTAssertGreaterThan(strongResult, lightResult)
     }
 
-    func testHighFrequencyNoiseProducesLessIntensityThanWind() {
-        let wind = BlowDetector()
-        let high = BlowDetector()
-        let windResult = feed(windLikeSignal(amplitude: 0.12), detector: wind, count: 12)
-        let highResult = feed(highFrequencyNoise(amplitude: 0.12), detector: high, count: 12)
-        XCTAssertGreaterThan(windResult, highResult)
+    func testHighFrequencySoundDoesNotTrigger() {
+        let detector = BlowDetector()
+        let result = feed(highFrequencyNoise(amplitude: 0.3), detector: detector, count: 16)
+        XCTAssertLessThan(result, BlowDetectionConfiguration.standard.strongBlowThreshold)
     }
 
-    func testMidFrequencyToneProducesLowVisualIntensity() {
+    func testMidFrequencyToneDoesNotTrigger() {
         let detector = BlowDetector()
         let result = feed(sineWave(frequency: 1_000, amplitude: 0.5), detector: detector, count: 16)
         XCTAssertLessThan(result, 0.15)
     }
 
-    func testVisualIntensityDecaysAfterImpulse() {
+    /// The soft shape check: wind concentrates below 500 Hz, so its wind ratio
+    /// is clearly higher than flat white noise spread up to 5 kHz.
+    func testWindRatioIncreasesForWindLikeSignal() {
+        let wind = debugSnapshot(for: windLikeSignal(amplitude: 0.16))
+        let noise = debugSnapshot(for: deterministicNoise(amplitude: 0.16))
+        XCTAssertGreaterThan(wind.windRatio, 0.5)
+        XCTAssertGreaterThan(wind.windRatio, noise.windRatio)
+    }
+
+    func testShortImpulseDoesNotRemainStrong() {
         let detector = BlowDetector()
         var impulse = [Float](repeating: 0, count: frameCount)
         impulse[frameCount / 2] = 1
@@ -65,7 +81,11 @@ final class BlowDetectorTests: XCTestCase {
         XCTAssertTrue(snapshot.rms.isFinite)
         XCTAssertTrue(snapshot.dbFS.isFinite)
         XCTAssertTrue(snapshot.windBandRMS.isFinite)
-        XCTAssertTrue(snapshot.visualIntensity.isFinite)
+        XCTAssertTrue(snapshot.windRatio.isFinite)
+        XCTAssertTrue(snapshot.windEnergyScore.isFinite)
+        XCTAssertTrue(snapshot.windRatioScore.isFinite)
+        XCTAssertTrue(snapshot.rawScore.isFinite)
+        XCTAssertTrue(snapshot.smoothedIntensity.isFinite)
     }
 
     @discardableResult

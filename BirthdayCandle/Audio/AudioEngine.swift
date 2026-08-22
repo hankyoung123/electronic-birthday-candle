@@ -42,7 +42,7 @@ private final class AudioConversionInput: @unchecked Sendable {
 @MainActor
 final class AudioEngine {
     var onBlowIntensity: (@MainActor @Sendable (Float) -> Void)?
-    var onBlowConfidence: (@MainActor @Sendable (Double) -> Void)?
+    var onSpeechConfidence: (@MainActor @Sendable (Double) -> Void)?
     var onFailure: (@MainActor @Sendable (AudioEngineError) -> Void)?
 
     #if DEBUG
@@ -447,7 +447,7 @@ final class AudioEngine {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.onBlowIntensity?(self.blowDetector.currentIntensity)
-                self.onBlowConfidence?(self.soundClassifier.currentSnapshot.blowConfidence)
+                self.onSpeechConfidence?(self.soundClassifier.currentSnapshot.speechConfidence)
                 try? await Task.sleep(for: .milliseconds(33))
             }
         }

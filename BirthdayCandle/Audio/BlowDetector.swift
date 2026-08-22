@@ -1,121 +1,120 @@
+import Accelerate
 import Foundation
 
 #if DEBUG
+/// Full-frame diagnostics for the Inspector: raw levels, the wind band features
+/// (power / RMS / ratio) and the two additive sub-scores.
 struct BlowDebugSnapshot: Sendable {
     let rms: Float
     let dbFS: Float
+    let windBandPower: Float
     let windBandRMS: Float
-    let visualIntensity: Float
+    let windRatio: Float
+    let windEnergyScore: Float
+    let windRatioScore: Float
+    let rawScore: Float
+    let smoothedIntensity: Float
 
     static let zero = BlowDebugSnapshot(
         rms: 0,
         dbFS: -120,
+        windBandPower: 0,
         windBandRMS: 0,
-        visualIntensity: 0
+        windRatio: 0,
+        windEnergyScore: 0,
+        windRatioScore: 0,
+        rawScore: 0,
+        smoothedIntensity: 0
     )
 }
 #endif
 
-/// Second-order biquad (RBJ cookbook, Direct Form I).
-private struct Biquad {
-    private var b0: Float = 1
-    private var b1: Float = 0
-    private var b2: Float = 0
-    private var a1: Float = 0
-    private var a2: Float = 0
-    private var x1: Float = 0
-    private var x2: Float = 0
-    private var y1: Float = 0
-    private var y2: Float = 0
-
-    init(kind: Kind, cutoffHz: Double, sampleRate: Double) {
-        let q: Double = 1 / sqrt(2)
-        let w0 = 2 * Double.pi * cutoffHz / sampleRate
-        let cosw0 = cos(w0)
-        let alpha = sin(w0) / (2 * q)
-        let a0 = 1 + alpha
-        let c1 = -2 * cosw0
-        let c2 = 1 - alpha
-
-        switch kind {
-        case .lowPass:
-            b0 = Float((1 - cosw0) / 2 / a0)
-            b1 = Float((1 - cosw0) / a0)
-            b2 = b0
-        case .highPass:
-            b0 = Float((1 + cosw0) / 2 / a0)
-            b1 = Float(-(1 + cosw0) / a0)
-            b2 = b0
-        }
-        a1 = Float(c1 / a0)
-        a2 = Float(c2 / a0)
-    }
-
-    enum Kind { case lowPass, highPass }
-
-    mutating func process(_ input: Float) -> Float {
-        let output = b0 * input + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-        x2 = x1
-        x1 = input
-        y2 = y1
-        y1 = output
-        return output
-    }
+/// Per-frame wind measurements (also used in Release — they ARE the detector).
+private struct WindAnalysis {
+    let windBandPower: Float
+    let windBandRMS: Float
+    let windRatio: Float
 }
 
-/// Low-latency airflow energy for flame animation only.
+/// Low-frequency wind detector (the proven design). iOS Voice Processing / AEC
+/// is expected to have removed our own music from the mic beforehand; this
+/// detector scores the residual low-frequency airflow that a real breath
+/// produces. Wind energy is the primary feature, wind ratio a soft shape check.
 ///
-/// This detector deliberately has no semantic “is a blow” output. It reduces
-/// microphone PCM to a smoothed 80–500 Hz RMS intensity that may react to any
-/// low-frequency sound. SoundClassifier is the sole source of extinguishing.
+/// No silence hard-gate: low volume naturally maps to ~0 through `windStart`.
+/// Fully additive, single path, no adaptive baseline / delta / broadband.
 final class BlowDetector: @unchecked Sendable {
+    private let configuration: BlowDetectionConfiguration
     private let lock = NSLock()
     private var smoothedIntensity: Float = 0
-    private var sampleRate: Double = 0
-    private var lowPassStages: [Biquad] = []
-    private var highPassStages: [Biquad] = []
-
     #if DEBUG
     private var debugSnapshot: BlowDebugSnapshot = .zero
     #endif
 
-    private let lowerFrequency = 80.0
-    private let upperFrequency = 500.0
-    private let visualStart: Float = 0.012
-    private let visualFull: Float = 0.055
-    private let attackSmoothing: Float = 0.28
-    private let releaseSmoothing: Float = 0.10
+    // Reused FFT scratch.
+    private let spectrumFFTSize = 1_024
+    private var fftSetup: FFTSetup?
+    private var spectrumInterleaved: [Float] = []
+    private var spectrumReal: [Float] = []
+    private var spectrumImag: [Float] = []
+    private var spectrumPower: [Float] = []
+    private var spectrumWindow: [Float] = []
+    private let powerEpsilon: Float = 1e-12
+
+    init(configuration: BlowDetectionConfiguration = .standard) {
+        self.configuration = configuration
+    }
+
+    deinit {
+        if let fftSetup { vDSP_destroy_fftsetup(fftSetup) }
+    }
 
     @discardableResult
     func analyze(samples: UnsafeBufferPointer<Float>, sampleRate: Double) -> Float {
         guard samples.count > 8, sampleRate > 0 else { return currentIntensity }
+        let config = configuration.snapshot()
+
+        var sumSquares: Float = 0
+        for sample in samples {
+            sumSquares += sample * sample
+        }
+        let totalRMS = sqrt(sumSquares / Float(samples.count))
+
+        let wind = analyzeWind(samples, sampleRate: sampleRate, totalRMS: totalRMS, config: config)
+
+        // Low energy naturally maps to ~0 through the wind thresholds; no hard
+        // silence gate that could blank a frame when Voice Processing briefly
+        // suppresses the RMS.
+        let windEnergyScore = normalized(wind.windBandRMS, lower: config.windStart, upper: config.windFull)
+        let windRatioScore = normalized(wind.windRatio, lower: config.windRatioStart, upper: config.windRatioFull)
+
+        // Additive only — no conjunctions, no energy × ratio product.
+        let rawScore = min(
+            max(
+                config.energyWeight * windEnergyScore + config.ratioWeight * windRatioScore,
+                0
+            ),
+            1
+        )
 
         return lock.withLock {
-            var sumSquares: Float = 0
-            for sample in samples {
-                sumSquares += sample * sample
-            }
-            let totalRMS = sqrt(sumSquares / Float(samples.count))
-            let windBandRMS = bandPassedRMS(samples, sampleRate: sampleRate)
-            let targetIntensity = normalized(
-                windBandRMS,
-                lower: visualStart,
-                upper: visualFull
-            )
-            let coefficient = targetIntensity > smoothedIntensity
-                ? attackSmoothing
-                : releaseSmoothing
-            smoothedIntensity += (targetIntensity - smoothedIntensity) * coefficient
-
+            let coefficient = rawScore > smoothedIntensity
+                ? config.attackSmoothing
+                : config.releaseSmoothing
+            smoothedIntensity += (rawScore - smoothedIntensity) * coefficient
             #if DEBUG
             debugSnapshot = BlowDebugSnapshot(
                 rms: totalRMS,
                 dbFS: totalRMS > 0 ? max(-120, 20 * log10(totalRMS)) : -120,
-                windBandRMS: windBandRMS,
-                visualIntensity: smoothedIntensity
+                windBandPower: wind.windBandPower,
+                windBandRMS: wind.windBandRMS,
+                windRatio: wind.windRatio,
+                windEnergyScore: windEnergyScore,
+                windRatioScore: windRatioScore,
+                rawScore: rawScore,
+                smoothedIntensity: smoothedIntensity
             )
             #endif
-
             return smoothedIntensity
         }
     }
@@ -133,49 +132,110 @@ final class BlowDetector: @unchecked Sendable {
     func reset() {
         lock.withLock {
             smoothedIntensity = 0
-            sampleRate = 0
-            lowPassStages = []
-            highPassStages = []
             #if DEBUG
             debugSnapshot = .zero
             #endif
         }
     }
 
-    private func bandPassedRMS(
-        _ samples: UnsafeBufferPointer<Float>,
-        sampleRate: Double
-    ) -> Float {
-        ensureFilters(sampleRate: sampleRate)
-        guard !lowPassStages.isEmpty, !highPassStages.isEmpty else { return 0 }
-
-        var sumSquares: Float = 0
-        for sample in samples {
-            var value = sample
-            for index in highPassStages.indices {
-                value = highPassStages[index].process(value)
-            }
-            for index in lowPassStages.indices {
-                value = lowPassStages[index].process(value)
-            }
-            sumSquares += value * value
-        }
-        return sqrt(sumSquares / Float(samples.count))
-    }
-
-    private func ensureFilters(sampleRate: Double) {
-        guard self.sampleRate != sampleRate || lowPassStages.isEmpty else { return }
-        self.sampleRate = sampleRate
-        lowPassStages = (0..<3).map { _ in
-            Biquad(kind: .lowPass, cutoffHz: upperFrequency, sampleRate: sampleRate)
-        }
-        highPassStages = (0..<3).map { _ in
-            Biquad(kind: .highPass, cutoffHz: lowerFrequency, sampleRate: sampleRate)
-        }
-    }
-
     private func normalized(_ value: Float, lower: Float, upper: Float) -> Float {
         guard upper > lower else { return 0 }
         return min(max((value - lower) / (upper - lower), 0), 1)
+    }
+
+    // MARK: - Wind-band analysis
+
+    private func analyzeWind(
+        _ samples: UnsafeBufferPointer<Float>,
+        sampleRate: Double,
+        totalRMS: Float,
+        config: BlowDetectionParameters
+    ) -> WindAnalysis {
+        let n = spectrumFFTSize
+        ensureFFTScratch(fftSize: n)
+        guard let setup = fftSetup else {
+            return WindAnalysis(windBandPower: 0, windBandRMS: 0, windRatio: 0)
+        }
+
+        let count = min(samples.count, n)
+        let log2n = vDSP_Length(log2(Double(n)))
+
+        let window = spectrumWindow
+        spectrumInterleaved.withUnsafeMutableBufferPointer { inter in
+            for i in 0..<count {
+                inter[i] = samples[i] * window[i]
+            }
+            if count < n {
+                for i in count..<n { inter[i] = 0 }
+            }
+            inter.withUnsafeBufferPointer { interPtr in
+                guard let base = interPtr.baseAddress else { return }
+                let complexPtr = UnsafeRawPointer(base).assumingMemoryBound(to: DSPComplex.self)
+                spectrumReal.withUnsafeMutableBufferPointer { realPtr in
+                    spectrumImag.withUnsafeMutableBufferPointer { imagPtr in
+                        var split = DSPSplitComplex(
+                            realp: realPtr.baseAddress!,
+                            imagp: imagPtr.baseAddress!
+                        )
+                        vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(n / 2))
+                        vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
+                        spectrumPower.withUnsafeMutableBufferPointer { powerPtr in
+                            vDSP_zvmags(&split, 1, powerPtr.baseAddress!, 1, vDSP_Length(n / 2))
+                        }
+                    }
+                }
+            }
+        }
+
+        let power = spectrumPower
+        let binWidth = sampleRate / Double(n)
+        let totalBins = n / 2
+        let windStartBin = max(1, Int((config.windBandLowerHz / binWidth).rounded(.down)))
+        let windEndBin = min(totalBins, Int((config.windBandUpperHz / binWidth).rounded(.down)))
+        let refEndBin = min(totalBins, Int((config.referenceBandUpperHz / binWidth).rounded(.down)))
+
+        func bandSum(_ start: Int, _ end: Int) -> Float {
+            guard end > start else { return 0 }
+            var sum: Float = 0
+            power.withUnsafeBufferPointer { p in
+                guard let base = p.baseAddress else { return }
+                vDSP_sve(base + start, 1, &sum, vDSP_Length(end - start))
+            }
+            return sum
+        }
+
+        let windBandPower = bandSum(windStartBin, windEndBin)
+        let referenceBandPower = bandSum(windStartBin, refEndBin)
+        let totalBandPower = bandSum(1, totalBins)
+
+        // Wind-band RMS, directly comparable to the time-domain total RMS
+        // (Parseval): bandRMS = totalRMS × √(bandShare). The share is computed
+        // within a single FFT frame, so windowing cancels out.
+        let bandShare = windBandPower / (totalBandPower + powerEpsilon)
+        let scaledShare = min(bandShare, 1)
+        let windBandRMS = sqrt(scaledShare) * totalRMS
+
+        let windRatio = windBandPower / (referenceBandPower + powerEpsilon)
+
+        return WindAnalysis(
+            windBandPower: windBandPower,
+            windBandRMS: windBandRMS,
+            windRatio: windRatio
+        )
+    }
+
+    private func ensureFFTScratch(fftSize: Int) {
+        guard fftSetup == nil, spectrumInterleaved.isEmpty else { return }
+        fftSetup = vDSP_create_fftsetup(
+            vDSP_Length(log2(Double(fftSize))),
+            FFTRadix(kFFTRadix2)
+        )
+        spectrumInterleaved = [Float](repeating: 0, count: fftSize)
+        spectrumReal = [Float](repeating: 0, count: fftSize / 2)
+        spectrumImag = [Float](repeating: 0, count: fftSize / 2)
+        spectrumPower = [Float](repeating: 0, count: fftSize / 2)
+        var window = [Float](repeating: 0, count: fftSize)
+        vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        spectrumWindow = window
     }
 }

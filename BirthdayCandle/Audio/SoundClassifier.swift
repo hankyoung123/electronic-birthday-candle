@@ -17,11 +17,12 @@ struct SoundClassificationSnapshot: Equatable, Sendable {
     static let musicIdentifier = "music"
 
     let topClassifications: [SoundClassificationPrediction]
+    /// Diagnostic read-outs. Only `speechConfidence` participates in the
+    /// ceremony (as a strong-speech veto); the rest are Debug-only.
     let windNoiseConfidence: Double
     let breathingConfidence: Double
     let speechConfidence: Double
     let musicConfidence: Double
-    let blowConfidence: Double
 
     static let zero = SoundClassificationSnapshot(classifications: [])
 
@@ -50,9 +51,6 @@ struct SoundClassificationSnapshot: Equatable, Sendable {
         breathingConfidence = confidenceByIdentifier[Self.breathingIdentifier] ?? 0
         speechConfidence = confidenceByIdentifier[Self.speechIdentifier] ?? 0
         musicConfidence = confidenceByIdentifier[Self.musicIdentifier] ?? 0
-
-        let airflowConfidence = max(windNoiseConfidence, breathingConfidence * 0.7)
-        blowConfidence = Self.clamp(airflowConfidence * (1 - speechConfidence))
     }
 
     private static func clamp(_ confidence: Double) -> Double {
@@ -62,8 +60,9 @@ struct SoundClassificationSnapshot: Equatable, Sendable {
 
 /// Apple Sound Analysis classifier fed by AudioEngine's existing microphone tap.
 ///
-/// This component owns sound classification and the minimal blow-confidence
-/// formula. AudioEngine remains the sole owner of PCM capture and routing.
+/// This component owns Apple sound classification only. It exposes the speech
+/// confidence used by CeremonySession's strong-speech veto; it is never used to
+/// prove a blow. AudioEngine remains the sole owner of PCM capture and routing.
 final class SoundClassifier: NSObject, SNResultsObserving, @unchecked Sendable {
     private let analyzerLock = NSLock()
     private let resultLock = NSLock()

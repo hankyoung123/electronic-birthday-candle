@@ -103,38 +103,66 @@ private struct BlowInspector: View {
     @State private var copiedLabel: String?
 
     var body: some View {
-        let visual = session.debugBlowSnapshot
+        let snapshot = session.debugBlowSnapshot
         let classification = session.debugSoundClassificationSnapshot
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Blow Inspector")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.orange.opacity(0.9))
+                HStack {
+                    Text("Blow Inspector")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange.opacity(0.9))
+                    Spacer()
+                    copyButton("Copy Snapshot", label: "Snapshot ✓", text: snapshotText)
+                    copyButton("Copy 3s Avg", label: "3s Avg ✓", text: rollingText)
+                }
 
-                metric("Input Route", session.debugInputDescription)
-                metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
                 metric("Voice Processing", session.debugVoiceProcessingEnabled ? "On" : "Off")
                 metric("Mic Permission", session.debugMicrophonePermissionGranted ? "Granted" : "Denied")
                 metric("Session Active", session.debugAudioSessionActive ? "Yes" : "No")
                 if let diagnostic = session.debugLastStartDiagnostic {
                     metric("Start Failure", diagnostic)
                 }
+                metric("Input Route", session.debugInputDescription)
+                metric("Sample Rate", "\(Int(session.debugInputSampleRate.rounded())) Hz")
 
                 Divider().overlay(.white.opacity(0.12))
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Sound Analysis")
+                        Text("Wind Detector")
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.cyan.opacity(0.9))
-                        Text("Classifier — extinguish source")
+                            .foregroundStyle(.orange.opacity(0.9))
+                        Text("80–500 Hz airflow — blow candidate")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.52))
                     }
                     Spacer()
-                    copyButton("Copy Classifier", label: "Classifier ✓", text: classificationText)
+                    copyButton("Copy Values", label: "Values ✓", text: copyValuesText)
                 }
 
+                metric("RMS / dBFS", "\(formatted(snapshot.rms)) / \(String(format: "%.1f dB", snapshot.dbFS))")
+                progressRow("Wind Band RMS", value: Double(snapshot.windBandRMS), detail: formatted(snapshot.windBandRMS))
+                progressRow("Wind Ratio", value: Double(snapshot.windRatio), detail: pct(snapshot.windRatio))
+                metric("Wind Energy Score", formatted(snapshot.windEnergyScore))
+                metric("Wind Ratio Score", formatted(snapshot.windRatioScore))
+                metric("Raw Blow Score", formatted(snapshot.rawScore))
+                progressRow("Smoothed Blow", value: Double(snapshot.smoothedIntensity), detail: formatted(snapshot.smoothedIntensity))
+                metric("Blow Candidate", session.debugBlowCandidateActive ? "Active" : "Inactive")
+
+                Divider().overlay(.white.opacity(0.12))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Apple Speech (veto only)")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.cyan.opacity(0.9))
+                        Text("Never proves a blow; only overrides")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.52))
+                    }
+                    Spacer()
+                }
+                progressRow("Speech Confidence", value: session.debugSpeechConfidence, detail: String(format: "%.2f", session.debugSpeechConfidence))
                 if let diagnostic = session.debugSoundClassificationDiagnostic {
                     metric("Classifier Error", diagnostic)
                 }
@@ -149,43 +177,42 @@ private struct BlowInspector: View {
                     }
                 }
 
-                progressRow("Wind Noise", value: classification.windNoiseConfidence)
-                progressRow("Breathing", value: classification.breathingConfidence)
-                progressRow("Speech", value: classification.speechConfidence)
-                progressRow("Music", value: classification.musicConfidence)
-                progressRow("Current Blow", value: classification.blowConfidence)
+                Divider().overlay(.white.opacity(0.12))
+
                 progressRow(
                     "Evidence",
-                    value: session.debugRequiredBlowDuration > 0
-                        ? session.debugBlowEvidence / session.debugRequiredBlowDuration
-                        : 0,
+                    value: Double(
+                        session.debugRequiredStrongBlowDuration > 0
+                            ? session.debugStrongBlowDuration / session.debugRequiredStrongBlowDuration
+                            : 0
+                    ),
                     detail: String(
                         format: "%.2f / %.2f s",
-                        session.debugBlowEvidence,
-                        session.debugRequiredBlowDuration
+                        session.debugStrongBlowDuration,
+                        session.debugRequiredStrongBlowDuration
                     )
                 )
-                metric("Threshold", confidence(session.debugBlowConfidenceThreshold))
-                metric("Duration", String(format: "%.2f s", session.debugRequiredBlowDuration))
-                metric("Decay", String(format: "%.2f×", session.debugBlowDecayRate))
+                metric("Start", formatted(session.debugStrongBlowStartThreshold))
+                metric("Maintain", formatted(session.debugStrongBlowMaintainThreshold))
+                metric("Required", String(format: "%.2f s", session.debugRequiredStrongBlowDuration))
+                metric("Decay", String(format: "%.2f×", session.debugStrongBlowDecayRate))
 
                 Divider().overlay(.white.opacity(0.12))
 
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Visual Response")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.orange.opacity(0.9))
-                        Text("80–500 Hz RMS — animation only")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.52))
-                    }
-                    Spacer()
-                    copyButton("Copy Visual", label: "Visual ✓", text: visualText)
-                }
-                metric("RMS / dBFS", "\(formatted(visual.rms)) / \(String(format: "%.1f dB", visual.dbFS))")
-                metric("80–500 Hz RMS", formatted(visual.windBandRMS))
-                progressRow("Visual Intensity", value: Double(visual.visualIntensity))
+                Text("Live Tuning")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.orange.opacity(0.9))
+
+                sliderRow("Wind Start", value: Binding(get: { Double(session.debugWindStart) }, set: { session.setDebugWindStart(Float($0)) }), in: 0.005...0.3, step: 0.005, format: "%.3f")
+                sliderRow("Wind Full", value: Binding(get: { Double(session.debugWindFull) }, set: { session.setDebugWindFull(Float($0)) }), in: 0.01...0.3, step: 0.005, format: "%.3f")
+                sliderRow("Ratio Start", value: Binding(get: { Double(session.debugWindRatioStart) }, set: { session.setDebugWindRatioStart(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
+                sliderRow("Ratio Full", value: Binding(get: { Double(session.debugWindRatioFull) }, set: { session.setDebugWindRatioFull(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
+                sliderRow("Energy Wt", value: Binding(get: { Double(session.debugEnergyWeight) }, set: { session.setDebugEnergyWeight(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
+                sliderRow("Ratio Wt", value: Binding(get: { Double(session.debugRatioWeight) }, set: { session.setDebugRatioWeight(Float($0)) }), in: 0...1, step: 0.05, format: "%.2f")
+                sliderRow("Start", value: Binding(get: { Double(session.debugStrongBlowStartThreshold) }, set: { session.setDebugStrongBlowStartThreshold(Float($0)) }), in: 0.05...1, step: 0.01, format: "%.2f")
+                sliderRow("Maintain", value: Binding(get: { Double(session.debugStrongBlowMaintainThreshold) }, set: { session.setDebugStrongBlowMaintainThreshold(Float($0)) }), in: 0...1, step: 0.01, format: "%.2f")
+                sliderRow("Duration", value: Binding(get: { session.debugRequiredStrongBlowDuration }, set: { session.setDebugRequiredStrongBlowDuration($0) }), in: 0.1...2, step: 0.01, format: "%.2f s")
+                sliderRow("Decay", value: Binding(get: { session.debugStrongBlowDecayRate }, set: { session.setDebugStrongBlowDecayRate($0) }), in: 0...2, step: 0.05, format: "%.2f")
 
                 Divider().overlay(.white.opacity(0.12))
 
@@ -228,34 +255,55 @@ private struct BlowInspector: View {
         }
     }
 
-    private var classificationText: String {
-        let snapshot = session.debugSoundClassificationSnapshot
-        let topFive = snapshot.topClassifications.enumerated().map { index, prediction in
-            "\(index + 1). \(prediction.identifier)  \(confidence(prediction.confidence))"
-        }.joined(separator: "\n")
-        return """
-        -- Apple Sound Analysis --
-        \(topFive.isEmpty ? "No classifications yet" : topFive)
-
-        Wind Noise: \(confidence(snapshot.windNoiseConfidence))
-        Breathing: \(confidence(snapshot.breathingConfidence))
-        Speech: \(confidence(snapshot.speechConfidence))
-        Music: \(confidence(snapshot.musicConfidence))
-        Blow Confidence: \(confidence(snapshot.blowConfidence))
-        Evidence: \(String(format: "%.2f", session.debugBlowEvidence)) / \(String(format: "%.2f", session.debugRequiredBlowDuration)) s
-        """
+    private var copyValuesText: String {
+        String(
+            format: "windStart=%.3f\nwindFull=%.3f\nwindRatioStart=%.2f\nwindRatioFull=%.2f\nenergyWt=%.2f\nratioWt=%.2f\nstart=%.2f\nmaintain=%.2f\nduration=%.2f\ndecay=%.2f",
+            session.debugWindStart,
+            session.debugWindFull,
+            session.debugWindRatioStart,
+            session.debugWindRatioFull,
+            session.debugEnergyWeight,
+            session.debugRatioWeight,
+            session.debugStrongBlowStartThreshold,
+            session.debugStrongBlowMaintainThreshold,
+            session.debugRequiredStrongBlowDuration,
+            session.debugStrongBlowDecayRate
+        )
     }
 
-    private var visualText: String {
+    private var snapshotText: String {
         let snapshot = session.debugBlowSnapshot
         return """
         Input: \(session.debugInputDescription)
         Sample Rate: \(Int(session.debugInputSampleRate.rounded())) Hz
         Voice Processing: \(session.debugVoiceProcessingEnabled ? "On" : "Off")
-        RMS: \(formatted(snapshot.rms))
         dBFS: \(String(format: "%.1f", snapshot.dbFS))
-        80–500 Hz RMS: \(formatted(snapshot.windBandRMS))
-        Visual Intensity: \(formatted(snapshot.visualIntensity))
+
+        WindRMS: \(formatted(snapshot.windBandRMS))
+        WindRatio: \(String(format: "%.2f", snapshot.windRatio))
+        WindEnergy: \(String(format: "%.2f", snapshot.windEnergyScore))
+        WindRatioScore: \(String(format: "%.2f", snapshot.windRatioScore))
+        Raw: \(String(format: "%.2f", snapshot.rawScore))
+        Smoothed: \(String(format: "%.2f", snapshot.smoothedIntensity))
+
+        Speech: \(String(format: "%.2f", session.debugSpeechConfidence))
+        Candidate: \(session.debugBlowCandidateActive ? "Active" : "Inactive")
+        Evidence: \(String(format: "%.2f", session.debugStrongBlowDuration)) / \(String(format: "%.2f", session.debugRequiredStrongBlowDuration)) s
+        """
+    }
+
+    private var rollingText: String {
+        let s = session.debugSpectrumRollingSummary
+        guard s.sampleCount > 0 else {
+            return "No samples yet — blow detection must be active for ~3s."
+        }
+        return """
+        -- 3s Avg (N=\(s.sampleCount)) --
+        dBFS:  \(f(s.dbFSAverage)) (peak \(f(s.dbFSPeak)))
+        WindRMS: \(f(s.windBandRMSAverage)) (peak \(f(s.windBandRMSPeak)))
+        WindRatio: \(f(s.windRatioAverage)) (peak \(f(s.windRatioPeak)))
+        Raw: \(f(s.rawAverage)) (peak \(f(s.rawPeak)))
+        Smoothed: \(f(s.smoothedAverage)) (peak \(f(s.smoothedPeak)))
         """
     }
 
@@ -267,12 +315,11 @@ private struct BlowInspector: View {
         }
     }
 
-    private func progressRow(_ label: String, value: Double, detail: String? = nil) -> some View {
-        let clamped = min(max(value, 0), 1)
-        return HStack(spacing: 8) {
+    private func progressRow(_ label: String, value: Double, detail: String) -> some View {
+        HStack(spacing: 8) {
             Text(label).frame(width: 120, alignment: .leading)
-            ProgressView(value: clamped, total: 1).tint(.orange)
-            Text(detail ?? confidence(value)).lineLimit(1).frame(width: 70, alignment: .trailing)
+            ProgressView(value: min(max(value, 0), 1), total: 1).tint(.orange)
+            Text(detail).lineLimit(1).frame(width: 90, alignment: .trailing)
         }
     }
 
@@ -285,7 +332,18 @@ private struct BlowInspector: View {
         }
     }
 
+    private func sliderRow(_ label: String, value: Binding<Double>, in range: ClosedRange<Double>, step: Double, format: String) -> some View {
+        let displayed = String(format: format, value.wrappedValue)
+        return HStack(spacing: 8) {
+            Text(label).frame(width: 120, alignment: .leading)
+            Slider(value: value, in: range, step: step).tint(.orange.opacity(0.72))
+            Text(displayed).frame(width: 90, alignment: .trailing)
+        }
+    }
+
+    private func f(_ value: Float) -> String { String(format: "%.2f", value) }
     private func formatted(_ value: Float) -> String { String(format: "%.3f", value) }
+    private func pct(_ value: Float) -> String { String(format: "%d%%", Int((value * 100).rounded())) }
     private func confidence(_ value: Double) -> String { String(format: "%.2f", value) }
 }
 #endif
