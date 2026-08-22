@@ -1,3 +1,4 @@
+import CoreMedia
 import XCTest
 @testable import BirthdayCandle
 
@@ -57,6 +58,17 @@ final class SoundClassifierTests: XCTestCase {
 
         XCTAssertEqual(withSpeech.speechConfidence, 0.95, accuracy: 0.0001)
         XCTAssertEqual(withoutSpeech.speechConfidence, 0)
+    }
+
+    func testSpeechObservationPreservesTimeRangeAndClampsConfidence() {
+        let timeRange = CMTimeRange(
+            start: CMTime(seconds: 1.25, preferredTimescale: 1_000),
+            duration: CMTime(seconds: 0.5, preferredTimescale: 1_000)
+        )
+        let observation = SpeechObservation(confidence: 1.4, timeRange: timeRange)
+
+        XCTAssertEqual(observation.confidence, 1)
+        XCTAssertEqual(observation.timeRange, timeRange)
     }
 
     private func makeSnapshot(

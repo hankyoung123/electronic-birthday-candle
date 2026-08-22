@@ -41,8 +41,8 @@ private final class AudioConversionInput: @unchecked Sendable {
 
 @MainActor
 final class AudioEngine {
-    var onBlowIntensity: (@MainActor @Sendable (Float) -> Void)?
-    var onSpeechConfidence: (@MainActor @Sendable (Double) -> Void)?
+    var onBlowIntensity: (@MainActor @Sendable (Float, CMTime) -> Void)?
+    var onSpeechObservation: (@MainActor @Sendable (SpeechObservation) -> Void)?
     var onFailure: (@MainActor @Sendable (AudioEngineError) -> Void)?
 
     #if DEBUG
@@ -72,6 +72,7 @@ final class AudioEngine {
     private var inputTapInstalled = false
     private var detectionRequested = false
     private var detectionDeliveryTask: Task<Void, Never>?
+    private var lastDeliveredSpeechObservationEnd: CMTime?
     private var musicFadeTask: Task<Void, Never>?
     private var notificationTokens: [NSObjectProtocol] = []
     private var wasMusicPlayingBeforeInterruption = false
@@ -118,6 +119,7 @@ final class AudioEngine {
         #if DEBUG
         lastStartDiagnostic = nil
         #endif
+        lastDeliveredSpeechObservationEnd = nil
         startDetectionDelivery()
     }
 
@@ -162,6 +164,7 @@ final class AudioEngine {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
             soundClassifier.stop()
+            lastDeliveredSpeechObservationEnd = nil
         }
         #endif
     }
@@ -189,6 +192,7 @@ final class AudioEngine {
         }
         soundClassifier.stop()
         blowDetector.reset()
+        lastDeliveredSpeechObservationEnd = nil
     }
 
     func handleRuntimeFailure(_ error: AudioEngineError) {
@@ -446,8 +450,20 @@ final class AudioEngine {
         detectionDeliveryTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.onBlowIntensity?(self.blowDetector.currentIntensity)
-                self.onSpeechConfidence?(self.soundClassifier.currentSnapshot.speechConfidence)
+                self.onBlowIntensity?(
+                    self.blowDetector.currentIntensity,
+                    self.soundClassifier.currentAnalysisTime
+                )
+                if let observation = self.soundClassifier.currentSpeechObservation {
+                    let observationEnd = CMTimeRangeGetEnd(observation.timeRange)
+                    let isFresh = self.lastDeliveredSpeechObservationEnd.map {
+                        CMTimeCompare(observationEnd, $0) != 0
+                    } ?? true
+                    if isFresh {
+                        self.lastDeliveredSpeechObservationEnd = observationEnd
+                        self.onSpeechObservation?(observation)
+                    }
+                }
                 try? await Task.sleep(for: .milliseconds(33))
             }
         }
@@ -526,6 +542,7 @@ final class AudioEngine {
             engine.inputNode.removeTap(onBus: 0)
             inputTapInstalled = false
             soundClassifier.stop()
+            lastDeliveredSpeechObservationEnd = nil
         }
         engine.stop()
         do {

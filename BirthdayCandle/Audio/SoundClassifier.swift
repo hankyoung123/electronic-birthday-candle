@@ -10,6 +10,19 @@ struct SoundClassificationPrediction: Equatable, Identifiable, Sendable {
     var id: String { identifier }
 }
 
+/// One Apple speech classification tied to the analyzed audio-stream timeline.
+/// CeremonySession compares this native time range with an airflow candidate;
+/// wall-clock time is deliberately not involved.
+struct SpeechObservation: Equatable, Sendable {
+    let confidence: Double
+    let timeRange: CMTimeRange
+
+    init(confidence: Double, timeRange: CMTimeRange) {
+        self.confidence = min(max(confidence, 0), 1)
+        self.timeRange = timeRange
+    }
+}
+
 struct SoundClassificationSnapshot: Equatable, Sendable {
     static let windNoiseIdentifier = "wind_noise_microphone"
     static let breathingIdentifier = "breathing"
@@ -69,13 +82,16 @@ final class SoundClassifier: NSObject, SNResultsObserving, @unchecked Sendable {
     private var analyzer: SNAudioStreamAnalyzer?
     private var request: SNClassifySoundRequest?
     private var nextFramePosition: AVAudioFramePosition = 0
+    private var sampleRate: Double = 0
     private var snapshot: SoundClassificationSnapshot = .zero
+    private var speechObservation: SpeechObservation?
     private var errorDescription: String?
 
     func start(format: AVAudioFormat) throws {
         stop()
         resultLock.withLock {
             snapshot = .zero
+            speechObservation = nil
             errorDescription = nil
         }
 
@@ -91,6 +107,7 @@ final class SoundClassifier: NSObject, SNResultsObserving, @unchecked Sendable {
                 self.analyzer = analyzer
                 self.request = request
                 nextFramePosition = 0
+                sampleRate = format.sampleRate
             }
         } catch {
             resultLock.withLock {
@@ -119,6 +136,7 @@ final class SoundClassifier: NSObject, SNResultsObserving, @unchecked Sendable {
             analyzer = nil
             request = nil
             nextFramePosition = 0
+            sampleRate = 0
             return currentAnalyzer
         }
         analyzerToComplete?.completeAnalysis()
@@ -126,6 +144,23 @@ final class SoundClassifier: NSObject, SNResultsObserving, @unchecked Sendable {
 
     var currentSnapshot: SoundClassificationSnapshot {
         resultLock.withLock { snapshot }
+    }
+
+    var currentSpeechObservation: SpeechObservation? {
+        resultLock.withLock { speechObservation }
+    }
+
+    /// Current position of the PCM stream fed to Sound Analysis. Airflow
+    /// candidates use this same timeline so their bounds can be compared
+    /// directly with SNClassificationResult.timeRange.
+    var currentAnalysisTime: CMTime {
+        analyzerLock.withLock {
+            guard sampleRate > 0 else { return .zero }
+            return CMTime(
+                seconds: Double(nextFramePosition) / sampleRate,
+                preferredTimescale: 1_000_000
+            )
+        }
     }
 
     var lastErrorDescription: String? {
@@ -141,8 +176,13 @@ final class SoundClassifier: NSObject, SNResultsObserving, @unchecked Sendable {
             )
         }
         let nextSnapshot = SoundClassificationSnapshot(classifications: classifications)
+        let nextSpeechObservation = SpeechObservation(
+            confidence: nextSnapshot.speechConfidence,
+            timeRange: classificationResult.timeRange
+        )
         resultLock.withLock {
             snapshot = nextSnapshot
+            speechObservation = nextSpeechObservation
             errorDescription = nil
         }
     }

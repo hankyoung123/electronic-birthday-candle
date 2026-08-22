@@ -1,3 +1,4 @@
+import CoreMedia
 import Foundation
 import Observation
 
@@ -76,7 +77,11 @@ final class CeremonySession {
     private var ceremonyTask: Task<Void, Never>?
     private var strongBlowDuration: TimeInterval = 0
     private var lastBlowSampleTime: TimeInterval?
-    /// Latest Apple speech confidence (0…1). Only used as a strong-speech veto.
+    private var candidateStartAnalysisTime: CMTime?
+    private var candidateQualifiedThrough: CMTime?
+    private var latestSpeechObservation: SpeechObservation?
+    private var blowDetectionEnabled = false
+    /// Latest Apple speech confidence (0…1), retained for Debug inspection.
     private var speechConfidence: Double = 0
     #if DEBUG
     private var spectrumHistory: [TimedSpectrum] = []
@@ -90,11 +95,11 @@ final class CeremonySession {
         self.audioEngine = audioEngine
         self.hapticEngine = hapticEngine
         self.blowConfiguration = blowConfiguration
-        audioEngine?.onBlowIntensity = { [weak self] intensity in
-            self?.receiveBlowIntensity(intensity)
+        audioEngine?.onBlowIntensity = { [weak self] intensity, analysisTime in
+            self?.receiveBlowIntensity(intensity, analysisTime: analysisTime)
         }
-        audioEngine?.onSpeechConfidence = { [weak self] confidence in
-            self?.receiveSpeechConfidence(confidence)
+        audioEngine?.onSpeechObservation = { [weak self] observation in
+            self?.receiveSpeechObservation(observation)
         }
         audioEngine?.onFailure = { [weak self] error in
             self?.handleAudioFailure(error)
@@ -144,11 +149,19 @@ final class CeremonySession {
             try? await Task.sleep(for: .seconds(1.7))
             guard !Task.isCancelled, self.phase == .lit else { return }
             self.transition(to: .wishing)
+
+            // Duck the speaker before accepting airflow candidates. Voice
+            // Processing remains a second line of defense, not the primary
+            // way we prevent our own music from reaching the microphone.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, self.phase == .wishing else { return }
+            self.blowDetectionEnabled = true
+            self.lastBlowSampleTime = nil
         }
     }
 
     func extinguish() {
-        guard phase == .lit || phase == .wishing else { return }
+        guard phase == .wishing else { return }
         ceremonyTask?.cancel()
         audioEngine?.stopBlowDetection()
         transition(to: .extinguishing)
@@ -169,9 +182,9 @@ final class CeremonySession {
         ceremonyTask?.cancel()
         audioEngine?.stop()
         blowIntensity = 0
-        strongBlowDuration = 0
-        speechConfidence = 0
-        lastBlowSampleTime = nil
+        resetCandidate()
+        resetSpeechState()
+        blowDetectionEnabled = false
         extinguishedAt = nil
         #if DEBUG
         spectrumHistory.removeAll(keepingCapacity: true)
@@ -179,19 +192,19 @@ final class CeremonySession {
         transition(to: .ready)
     }
 
-    func receiveSpeechConfidence(
-        _ confidence: Double,
-        at _: TimeInterval = ProcessInfo.processInfo.systemUptime
-    ) {
-        speechConfidence = min(max(confidence, 0), 1)
+    func receiveSpeechObservation(_ observation: SpeechObservation) {
+        latestSpeechObservation = observation
+        speechConfidence = observation.confidence
+        evaluateAwaitingCandidate(with: observation)
     }
 
     func receiveBlowIntensity(
         _ intensity: Float,
-        at time: TimeInterval = ProcessInfo.processInfo.systemUptime
+        at time: TimeInterval = ProcessInfo.processInfo.systemUptime,
+        analysisTime: CMTime? = nil
     ) {
-        // Blow intensity drives the flame live and is the blow candidate.
-        // Extinguish is decided here by the time-above-threshold state machine.
+        // .lit and .wishing both animate the flame. Only .wishing, after the
+        // 300 ms music duck, may establish or confirm an extinguish candidate.
         guard phase == .lit || phase == .wishing else {
             blowIntensity = 0
             return
@@ -202,53 +215,93 @@ final class CeremonySession {
         recordSpectrumSample(at: time)
         #endif
 
-        let elapsed = lastBlowSampleTime.map { min(max(time - $0, 0), 0.1) } ?? 0
-        lastBlowSampleTime = time
-
-        let parameters = blowConfiguration.snapshot()
-
-        // Strong-speech veto: Apple Sound Analysis never proves a blow, it only
-        // overrides it. Once a blow candidate is established we are more lenient
-        // (0.90) because Apple occasionally labels a real blow as speech; before
-        // a candidate starts we veto harder (0.80) to stop talking from ever
-        // beginning accumulation.
-        let vetoThreshold: Double = strongBlowDuration > 0 ? 0.90 : 0.80
-        if speechConfidence >= vetoThreshold {
-            strongBlowDuration = max(0, strongBlowDuration - elapsed * 2.0)
+        guard phase == .wishing, blowDetectionEnabled else {
+            resetCandidate()
             return
         }
 
-        if strongBlowDuration > 0 {
-            // Already counting a blow: keep accruing while the user is still
-            // blowing meaningfully (above the maintain threshold), and slowly
-            // lose progress below it.
-            if blowIntensity >= parameters.strongBlowMaintainThreshold {
-                strongBlowDuration += elapsed
-            } else {
-                strongBlowDuration = max(
-                    0,
-                    strongBlowDuration - elapsed * parameters.strongBlowDecayRate
-                )
-            }
-        } else if blowIntensity >= parameters.strongBlowThreshold {
-            // First crossing of the start threshold begins accumulation.
-            strongBlowDuration += elapsed
+        let elapsed = lastBlowSampleTime.map { min(max(time - $0, 0), 0.1) } ?? 0
+        lastBlowSampleTime = time
+        let parameters = blowConfiguration.snapshot()
+
+        // Evidence has already qualified. Do not extinguish from airflow alone;
+        // wait for a fresh Apple result whose timeRange covers the candidate.
+        if candidateQualifiedThrough != nil {
+            return
         }
 
-        // A 5 ms tolerance absorbs float rounding in the accumulated time.
+        guard blowIntensity >= parameters.strongBlowThreshold else {
+            resetCandidate()
+            return
+        }
+
+        let streamTime = analysisTime ?? CMTime(
+            seconds: time,
+            preferredTimescale: 1_000_000
+        )
+        if candidateStartAnalysisTime == nil {
+            candidateStartAnalysisTime = streamTime
+            strongBlowDuration = 0
+            return
+        }
+
+        strongBlowDuration += elapsed
         if strongBlowDuration + 0.005 >= parameters.requiredStrongBlowDuration {
+            candidateQualifiedThrough = streamTime
+            if let latestSpeechObservation {
+                evaluateAwaitingCandidate(with: latestSpeechObservation)
+            }
+        }
+    }
+
+    private func evaluateAwaitingCandidate(with observation: SpeechObservation) {
+        guard
+            phase == .wishing,
+            blowDetectionEnabled,
+            let candidateStartAnalysisTime,
+            let candidateQualifiedThrough
+        else { return }
+
+        let observationStart = observation.timeRange.start
+        let observationEnd = CMTimeRangeGetEnd(observation.timeRange)
+        let coversCandidate = CMTimeCompare(observationStart, candidateStartAnalysisTime) <= 0
+            && CMTimeCompare(observationEnd, candidateQualifiedThrough) >= 0
+        guard coversCandidate else { return }
+
+        if observation.confidence >= 0.8 {
+            resetCandidate()
+        } else {
             extinguish()
         }
+    }
+
+    private func resetCandidate() {
+        strongBlowDuration = 0
+        lastBlowSampleTime = nil
+        candidateStartAnalysisTime = nil
+        candidateQualifiedThrough = nil
+    }
+
+    private func resetSpeechState() {
+        latestSpeechObservation = nil
+        speechConfidence = 0
     }
 
     private func transition(to newPhase: CeremonyPhase) {
         phase = newPhase
         switch newPhase {
         case .lit:
+            blowDetectionEnabled = false
+            resetCandidate()
             if musicEnabled { audioEngine?.fadeMusic(to: 0.72, duration: 0.4) }
         case .wishing:
-            if musicEnabled { audioEngine?.fadeMusic(to: 0.34, duration: 1.2) }
+            blowDetectionEnabled = false
+            resetCandidate()
+            resetSpeechState()
+            if musicEnabled { audioEngine?.fadeMusic(to: 0.15, duration: 0.3) }
         case .extinguishing:
+            blowDetectionEnabled = false
+            resetCandidate()
             audioEngine?.playEffect(resourceName: "extinguish", volume: 0.62)
             if musicEnabled { audioEngine?.fadeMusic(to: 0.18, duration: 0.35) }
         case .celebrating:
@@ -265,9 +318,9 @@ final class CeremonySession {
         ceremonyTask?.cancel()
         audioEngine?.stop()
         blowIntensity = 0
-        strongBlowDuration = 0
-        speechConfidence = 0
-        lastBlowSampleTime = nil
+        resetCandidate()
+        resetSpeechState()
+        blowDetectionEnabled = false
         #if DEBUG
         spectrumHistory.removeAll(keepingCapacity: true)
         #endif
@@ -325,8 +378,12 @@ final class CeremonySession {
     }
 
     var debugBlowCandidateActive: Bool {
-        strongBlowDuration > 0
+        candidateStartAnalysisTime != nil
     }
+
+    var debugAwaitingSpeechCheck: Bool { candidateQualifiedThrough != nil }
+
+    var debugBlowDetectionEnabled: Bool { blowDetectionEnabled }
 
     var debugSpectrumRollingSummary: SpectrumRollingSummary {
         guard !spectrumHistory.isEmpty else { return .empty }

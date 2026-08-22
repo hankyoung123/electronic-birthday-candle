@@ -1,103 +1,84 @@
-# 真机校准手册（原版 Wind Detector + Apple 强讲话否决）
+# 真机验证手册（Airflow Candidate + Delayed Speech Veto）
 
-> 目标：回到**已证明能工作**的 80–500 Hz 风噪检测（0f4104e 思路），Apple Sound Analysis
-> 只做“强讲话否决”（不参与证明吹气）。真机 Debug 构建用，Release 无可调入口。
-
-## 0. 当前路径（唯一生产路径）
+## 生产路径
 
 ```text
 Voice Processing / AEC
 ↓
-Mic PCM
-↓
-原版 Wind Detector（FFT）
-├─ 80–500 Hz Wind Energy（windBandRMS, Parseval 归一）
-└─ 80–500 / 80–5000 Wind Ratio（软形状约束）
-↓
-Blow Intensity（0…1，同时驱动火焰 + 吹气候选）
-↓
-CeremonySession
-├─ 原版 Start / Maintain / Duration 状态机
-└─ Strong Speech Veto（Apple 只否决）
-↓
-Extinguish
+唯一 Mic PCM tap
+├─ FFT Wind Detector → airflow intensity → flame + candidate
+└─ Apple Sound Analysis → timestamped SpeechObservation
+                                      ↓
+                              delayed speech veto
+                                      ↓
+                              CeremonySession → extinguish
 ```
 
-```
-windEnergyScore = normalize(windBandRMS,  0.03, 0.14)
-windRatioScore  = normalize(windRatio,     0.35, 0.65)
-rawScore = windEnergyScore × 0.75 + windRatioScore × 0.25   # 全加法
-attack 0.28 / release 0.10
-```
+Apple 分类器不再作为吹气的正向条件。`wind_noise_microphone`、`breathing`、`music`
+和 Top 5 只用于 Debug 观察；生产判定只读取 `speech`，并保留
+`SNClassificationResult.timeRange`。
 
-- **无 silenceFloor 硬门槛**：低能量自然经 `windStart` 归零——避免 Voice Processing
-  瞬时压低 RMS 时整帧失效。
-- **无** Peak Hold / Direct 带通取代 FFT / Adaptive Baseline / Delta / Broadband /
-  多频段评分。
-- **Apple 只读 speechConfidence**；`wind_noise_microphone / breathing / music /
-  Top 5` 仅 Debug 展示，不入判定、不作为吹气证据。
-
-### 熄灭状态机（CeremonySession）
+## 产品时序
 
 ```text
-Start 0.35 / Maintain 0.18 / Required 0.35s / Decay 0.40
+.lit
+Music 0.72
+火焰响应声音
+Extinguish OFF
 
-if evidence > 0:
-    intensity >= maintain → evidence += dt
-    else                 → evidence = max(0, evidence − dt×decay)
-else if intensity >= start:
-    evidence += dt          # 必须先跨过 Start 才建立候选（Maintain 不能从 0 起算）
+↓ 1.7s
+
+.wishing
+Music fade → 0.15（300ms）
+Extinguish 仍 OFF
+
+↓ fade 完成
+
+Airflow Candidate ON
 ```
 
-### Strong Speech Veto（P1）
+因此音乐最高的 `.lit` 阶段无法累计 candidate。Voice Processing 继续保留，但降低扬声器
+音量是进入吹气阶段时减少 `Speaker → Air → Mic` 干扰的第一道措施。
+
+## Candidate 状态机
 
 ```text
-candidate 未建立: speech >= 0.80 → 本帧禁止累计，evidence 快速衰减（−2.0×dt）
-candidate 已建立: speech >= 0.90 → 同样否决
-否则完全不干预（Apple 不削弱真实吹气）
+idle
+
+↓ airflow intensity >= 0.35
+
+accumulating
+连续累计 0.35s
+低于 0.35 → 立即回到 idle
+
+↓ evidence 达标（不会立即熄灭）
+
+awaitingSpeechCheck
+
+↓ 收到 timeRange 覆盖 candidate 开始到达标区间的新 Apple result
+
+speech >= 0.80 → reject → idle
+speech <  0.80 → extinguish
 ```
 
-## 1. Debug Panel
+Candidate 的开始和达标时间使用 Sound Analysis PCM 流的 `CMTime`；SpeechObservation 使用
+同一流的 `CMTimeRange`。不能用系统 uptime 与 `timeRange` 直接比较。旧结果或只覆盖候选后半段
+的结果没有确认权。
 
-- `Voice Processing On/Off`、`Mic Permission`、`Session Active`、`Start Failure`（DEBUG）
-- `Input Route`、`Sample Rate`
-- `RMS / dBFS`、`Wind Band RMS`、`Wind Ratio`
-- `Wind Energy Score`、`Wind Ratio Score`、`Raw Blow Score`、`Smoothed Blow`
-- `Blow Candidate Active`、`Speech Confidence`、`Top 5`、`Classifier Error`
-- `Evidence / Start / Maintain / Required / Decay`、`Music Volume`
-- **Live Tuning**：Wind Start/Full、Ratio Start/Full、Energy/Ratio Wt、Start/Maintain/Duration/Decay、Music
-
-**重点观察**：
-- 正常吹气：Blow Intensity 稳定跨过 0.35，Speech 通常低于 veto。
-- 讲话：即使 Blow Intensity 越过 0.35，Speech 稳定升高触发 veto，不累计。
-
-## 2. 真机验收
+## 真机验收
 
 | # | 场景 | 目标 |
 | --- | --- | --- |
-| 1 | 无音乐普通吹气 ×10 | ≥9/10 熄灭，0.4–0.8s |
-| 2 | 轻吹 ×10 | 立即明显火焰反馈 |
-| 3 | 正常讲话 30s | 不熄灭 |
-| 4 | 大声讲话 | 不熄灭 |
-| 5 | 持续“啊—” | 不熄灭（speech veto）|
-| 6 | 音乐 34% + 吹气 | 可靠熄灭 |
-| 7 | 音乐 72% + 吹气 | 可靠熄灭 |
-| 8 | 音乐 72% 单独 30s | 不触发 |
+| 1 | `.lit` 音乐 72%，不吹气 | 不熄灭，candidate 不建立 |
+| 2 | `.lit` 持续吹气 | 火焰响应，但不熄灭 |
+| 3 | 进入 `.wishing` | 音乐约 300ms 降至 15%，之后才开放检测 |
+| 4 | `.wishing` 普通吹气 ×10 | ≥9/10 熄灭，感知延迟约 0.5–0.7s |
+| 5 | `.wishing` 正常讲话 30s | 不熄灭，覆盖结果的 speech 通常 ≥0.80 |
+| 6 | `.wishing` 大声讲话/持续“啊—” | candidate 被 Speech Veto 拒绝 |
+| 7 | `.wishing` 音乐单独播放 30s | 不熄灭 |
+| 8 | `.wishing` 音乐 + 普通吹气 | 仍可可靠熄灭 |
 
-## 3. 定参规则
-
-1. Wind Start/Full（0.03/0.14）：轻吹响应不足 → 调低 Start；讲话/底噪误触发 → 调高。
-2. Ratio Start/Full（0.35/0.65）：滤纯音/白噪/拍手；**别让 Ratio 阻碍真实吹气**（权重 0.75/0.25）。
-3. Start/Maintain/Required/Decay（0.35/0.18/0.35/0.40）：真机误触/漏检调。
-4. Speech Veto（0.80/0.90）：若真实吹气被 Apple 误判 speech → 把已建立候选的 0.90 再调高或去掉二段统一 0.85+。
-5. 已知边界：浊音/低音音乐低频主导 → 依赖 VP 消音乐 + veto 防讲话；音乐音量随 Raw 显著上升 → 先查 VP。
-
-## 4. 固化
-
-1. 验完用 **Copy Values**（10 键）写回 `BlowDetectionConfiguration.swift`。
-2. 连测 3 轮。Release 自动不含 Inspector。
-
-## 5. 后续（仅在需要时）
-
-仍分不清吹气/音乐时再考虑：`Normalized FFT → Blow Reference → Cosine Similarity`
-（`rawScore = wind×0.60 + ratio×0.20 + template×0.20`）。不上 MFCC / ML。
+Debug 时重点记录：airflow intensity、candidate/awaiting 状态、Speech confidence、Apple
+结果的 start/end time，以及从吹气开始到熄灭的总延迟。不要继续调整 Wind Start、Wind Ratio、
+Energy Weight，也不要增加新的声学特征；若有问题，先判断是 airflow candidate 未成立，还是
+SpeechObservation 的覆盖时序/阈值导致拒绝。
